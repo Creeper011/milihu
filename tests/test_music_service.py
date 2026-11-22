@@ -8,6 +8,7 @@ from pydantic import HttpUrl, TypeAdapter
 from milihu.exceptions.media import MediaBackendError
 from milihu.exceptions.voice import VoiceError
 from milihu.types.default.playlist import PLAYLIST_FALLBACK_WARNING
+from milihu.types.default.voice import DEFAULT_PLAYBACK_OPTIONS
 from milihu.types.media import MediaResolveOptions, MediaResult
 from milihu.types.playlist import PlaylistEntry, ResolvedPlaylist
 from milihu.types.voice import (
@@ -15,7 +16,9 @@ from milihu.types.voice import (
     ChannelMoveCallback,
     DisconnectCallback,
     LoopMode,
+    PlaybackOptions,
     ProbedAudio,
+    SeekOffset,
     StreamMetadata,
     Track,
     TrackEndCallback,
@@ -32,6 +35,7 @@ class FakeVoiceManager:
         self.playing: dict[int, bool] = {}
         self.paused: dict[int, bool] = {}
         self.played_urls: list[tuple[int, str]] = []
+        self.play_calls: list[tuple[int, str, PlaybackOptions, float]] = []
         self.after_callbacks: dict[int, TrackEndCallback] = {}
         self.on_disconnect: DisconnectCallback | None = None
         self.on_channel_move: ChannelMoveCallback | None = None
@@ -74,10 +78,13 @@ class FakeVoiceManager:
         stream_url: str,
         *,
         after: TrackEndCallback,
+        playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
+        seek_seconds: SeekOffset = 0.0,
     ) -> None:
         if self.raise_on_play is not None:
             raise self.raise_on_play
         self.played_urls.append((guild_id, stream_url))
+        self.play_calls.append((guild_id, stream_url, playback, seek_seconds))
         self.playing[guild_id] = True
         self.paused[guild_id] = False
         self.after_callbacks[guild_id] = after
@@ -194,6 +201,45 @@ class FakeMediaBackend:
 
 
 class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_query_resolves_before_enqueue_and_rejects_bad_input(self) -> None:
+        class FakeSearch:
+            def __init__(self) -> None:
+                self.queries: list[str] = []
+
+            async def search(self, query: str) -> tuple[HttpUrl, ...]:
+                self.queries.append(query)
+                if query == "missing song":
+                    raise VoiceError("No videos found for this search.")
+                return (
+                    _URL_ADAPTER.validate_python(
+                        "https://www.youtube.com/watch?v=abc123"
+                    ),
+                )
+
+        voice = FakeVoiceManager()
+        backend = FakeMediaBackend()
+        search = FakeSearch()
+        player = MusicPlayerService(
+            voice, backend, stream_probe=FakeStreamProbe(), search_resolver=search
+        )
+        with self.assertRaisesRegex(VoiceError, "voice channel"):
+            await player.enqueue(1, None, "my favorite song", requested_by=1)
+        self.assertEqual(search.queries, [])
+        for value in ("  ", "https://", "missing song"):
+            with self.assertRaises(VoiceError):
+                await player.enqueue(1, 100, value, requested_by=1)
+        self.assertEqual(voice.channels, {})
+        self.assertEqual(backend.calls, [])
+        result = await player.enqueue(1, 100, "  my favorite song  ", requested_by=1)
+        self.assertEqual(search.queries, ["missing song", "my favorite song"])
+        self.assertEqual(
+            str(result.track.source_url), "https://www.youtube.com/watch?v=abc123"
+        )
+        self.assertEqual(backend.calls[0][0], "https://www.youtube.com/watch?v=abc123")
+        await player.enqueue(1, 100, "https://example.com/direct", requested_by=1)
+        self.assertEqual(search.queries, ["missing song", "my favorite song"])
+        await player.aclose()
+
     async def test_auto_connect_and_clean_takeover_from_empty_channel(self) -> None:
         voice = FakeVoiceManager()
         backend = FakeMediaBackend()
@@ -764,3 +810,254 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
 
         await player.aclose()
         await player2.aclose()
+
+    async def test_search_falls_back_to_next_candidate_when_cobalt_fails(self) -> None:
+        class MultiCandidateSearch:
+            def __init__(self, urls: list[str]) -> None:
+                self.urls = tuple(_URL_ADAPTER.validate_python(u) for u in urls)
+
+            async def search(self, query: str) -> tuple[HttpUrl, ...]:
+                return self.urls
+
+        class FailingFirstBackend:
+            def __init__(self, *, outage: bool = False) -> None:
+                self.calls: list[str] = []
+                self.outage = outage
+
+            async def resolve(
+                self, url: str, **options: Unpack[MediaResolveOptions]
+            ) -> MediaResult:
+                self.calls.append(url)
+                if self.outage:
+                    raise MediaBackendError("service unavailable", status=503)
+                if "dead" in url:
+                    return {"status": "error", "code": "error.api.youtube.unavailable"}
+                slug = url.rsplit("=", 1)[-1]
+                return {
+                    "status": "file",
+                    "url": f"https://stream.example/{slug}",
+                    "filename": f"{slug}.opus",
+                    "delivery": "proxy",
+                }
+
+        # Candidate #1 is unplayable -> automatically falls back to candidate #2.
+        voice = FakeVoiceManager()
+        backend = FailingFirstBackend()
+        search = MultiCandidateSearch(
+            [
+                "https://www.youtube.com/watch?v=dead_01",
+                "https://www.youtube.com/watch?v=good_02",
+                "https://www.youtube.com/watch?v=good_03",
+            ]
+        )
+        player = MusicPlayerService(
+            voice, backend, stream_probe=FakeStreamProbe(), search_resolver=search
+        )
+        result = await player.enqueue(1, 100, "some song", requested_by=7)
+        self.assertEqual(
+            str(result.track.source_url),
+            "https://www.youtube.com/watch?v=good_02",
+        )
+        self.assertEqual(result.track.title, "good_02")
+        self.assertEqual(
+            backend.calls,
+            [
+                "https://www.youtube.com/watch?v=dead_01",
+                "https://www.youtube.com/watch?v=good_02",
+            ],
+        )
+
+        # Consecutive backend outages abort after max_backend_failures (3) without
+        # trying remaining candidates or connecting to voice.
+        voice_outage = FakeVoiceManager()
+        outage_backend = FailingFirstBackend(outage=True)
+        outage_search = MultiCandidateSearch(
+            [f"https://www.youtube.com/watch?v=cand_{i}" for i in range(5)]
+        )
+        player_outage = MusicPlayerService(
+            voice_outage,
+            outage_backend,
+            stream_probe=FakeStreamProbe(),
+            search_resolver=outage_search,
+        )
+        with self.assertRaisesRegex(VoiceError, "service unavailable"):
+            await player_outage.enqueue(2, 200, "some song", requested_by=7)
+        self.assertEqual(len(outage_backend.calls), 3)
+        self.assertEqual(voice_outage.channels, {})
+
+        # All candidates unplayable -> raises last VoiceError without connecting.
+        voice_dead = FakeVoiceManager()
+        dead_backend = FailingFirstBackend()
+        dead_search = MultiCandidateSearch(
+            [
+                "https://www.youtube.com/watch?v=dead_01",
+                "https://www.youtube.com/watch?v=dead_02",
+            ]
+        )
+        player_dead = MusicPlayerService(
+            voice_dead,
+            dead_backend,
+            stream_probe=FakeStreamProbe(),
+            search_resolver=dead_search,
+        )
+        with self.assertRaisesRegex(VoiceError, "unavailable"):
+            await player_dead.enqueue(3, 300, "all dead", requested_by=7)
+        self.assertEqual(len(dead_backend.calls), 2)
+        self.assertEqual(voice_dead.channels, {})
+
+        await player.aclose()
+        await player_outage.aclose()
+        await player_dead.aclose()
+
+    async def test_set_speed_applies_immediately_persists_and_resets(self) -> None:
+        voice = FakeVoiceManager()
+        backend = FakeMediaBackend()
+        started_tracks: list[str] = []
+
+        async def on_track_start(_guild_id: int, _ch: int, track: Track) -> None:
+            started_tracks.append(track.title)
+
+        player = MusicPlayerService(
+            voice,
+            backend,
+            stream_probe=FakeStreamProbe(),
+            on_track_start=on_track_start,
+        )
+
+        now = 100.0
+        with patch(
+            "milihu.usecases.music_service.time.monotonic", side_effect=lambda: now
+        ):
+            await player.enqueue(1, 10, "https://example.com/1", requested_by=1)
+            await player.enqueue(1, 10, "https://example.com/2", requested_by=1)
+            self.assertEqual(len(voice.play_calls), 1)
+            self.assertEqual(voice.play_calls[0][2], DEFAULT_PLAYBACK_OPTIONS)
+            self.assertEqual(voice.play_calls[0][3], 0.0)
+            old_after = voice.after_callbacks[1]
+
+            # Advance 10 seconds at 1.0x, then change speed to 1.5x.
+            now = 110.0
+            updated = await player.set_speed(1, 10, speed=1.5)
+            self.assertEqual(updated, PlaybackOptions(speed=1.5, preserve_pitch=True))
+            self.assertEqual(len(voice.play_calls), 2)
+            # Re-resolved a fresh stream URL on restart.
+            self.assertNotEqual(voice.play_calls[1][1], voice.play_calls[0][1])
+            self.assertEqual(voice.play_calls[1][2], updated)
+            self.assertAlmostEqual(voice.play_calls[1][3], 10.0)
+            # Restarting for speed does not re-announce Now Playing.
+            self.assertEqual(len(started_tracks), 1)
+
+            # Stale `after` callback from the stopped player is ignored.
+            await old_after(None)
+            self.assertEqual(len(voice.play_calls), 2)
+
+            # Advance 4 real seconds at 1.5x -> +6.0 media seconds -> 16.0s total.
+            now = 114.0
+            updated2 = await player.set_speed(1, 10, preserve_pitch=False)
+            self.assertEqual(
+                updated2, PlaybackOptions(speed=1.5, preserve_pitch=False)
+            )
+            self.assertEqual(len(voice.play_calls), 3)
+            self.assertEqual(voice.play_calls[2][2], updated2)
+            self.assertAlmostEqual(voice.play_calls[2][3], 16.0)
+            self.assertEqual(player.get_queue(1).playback, updated2)
+
+            # No-op when setting identical values does not restart playback.
+            same = await player.set_speed(1, 10, speed=1.5, preserve_pitch=False)
+            self.assertEqual(same, updated2)
+            self.assertEqual(len(voice.play_calls), 3)
+
+            # Next track inherits guild playback options from offset 0.0.
+            now = 120.0
+            await voice.finish_track(1)
+            self.assertEqual(len(voice.play_calls), 4)
+            self.assertTrue(voice.play_calls[3][1].startswith("https://stream.example/2"))
+            self.assertEqual(voice.play_calls[3][2], updated2)
+            self.assertEqual(voice.play_calls[3][3], 0.0)
+
+            # Stop resets speed & preserve_pitch to defaults.
+            await player.stop(1, 10)
+            self.assertEqual(player.get_queue(1).playback, DEFAULT_PLAYBACK_OPTIONS)
+
+        await player.aclose()
+
+    async def test_set_speed_while_paused_restarts_on_resume_at_paused_offset(
+        self,
+    ) -> None:
+        voice = FakeVoiceManager()
+        backend = FakeMediaBackend()
+        player = MusicPlayerService(voice, backend, stream_probe=FakeStreamProbe())
+
+        now = 50.0
+        with patch(
+            "milihu.usecases.music_service.time.monotonic", side_effect=lambda: now
+        ):
+            await player.enqueue(1, 10, "https://example.com/1", requested_by=1)
+            now = 62.5
+            await player.pause(1, 10)
+            self.assertTrue(voice.is_paused(1))
+
+            # Changing speed while paused does not spawn a new stream yet.
+            now = 100.0
+            updated = await player.set_speed(1, 10, speed=0.75, preserve_pitch=False)
+            self.assertEqual(
+                updated, PlaybackOptions(speed=0.75, preserve_pitch=False)
+            )
+            self.assertEqual(len(voice.play_calls), 1)
+            self.assertTrue(voice.is_paused(1))
+
+            # Resuming restarts from the exact paused media position (12.5s).
+            now = 120.0
+            resumed = await player.resume(1, 10)
+            self.assertEqual(resumed.title, "1")
+            self.assertEqual(len(voice.play_calls), 2)
+            self.assertEqual(voice.play_calls[1][2], updated)
+            self.assertAlmostEqual(voice.play_calls[1][3], 12.5)
+            self.assertTrue(voice.is_playing(1))
+
+        await player.aclose()
+
+    async def test_set_speed_validation_and_live_stream_blocking(self) -> None:
+        voice = FakeVoiceManager()
+        probe = FakeStreamProbe()
+        probe.probe_results["https://radio.example/live"] = ProbedAudio(
+            stream_url="https://radio.example/live",
+            title="Live Radio",
+            is_live=True,
+        )
+        probe.probe_results["https://example.com/1"] = ProbedAudio(
+            stream_url="https://example.com/1",
+            title="Track 1",
+            is_live=False,
+        )
+        player = MusicPlayerService(voice, None, stream_probe=probe)
+
+        await player.enqueue(1, 10, "https://example.com/1", requested_by=1)
+
+        # Out-of-range and non-finite speeds raise VoiceError.
+        for bad_speed in (0.1, 0.0, -1.0, 5.0, float("nan"), float("inf")):
+            with self.assertRaisesRegex(VoiceError, "Speed must be between"):
+                await player.set_speed(1, 10, speed=bad_speed)
+
+        # Wrong channel rejected.
+        with self.assertRaisesRegex(VoiceError, "same voice channel"):
+            await player.set_speed(1, 99, speed=1.25)
+
+        # Toggling preserve_pitch at 1.0x updates state without restarting FFmpeg.
+        opts = await player.set_speed(1, 10, preserve_pitch=False)
+        self.assertEqual(opts, PlaybackOptions(speed=1.0, preserve_pitch=False))
+        self.assertEqual(len(voice.play_calls), 1)
+
+        # Queue a live stream while guild speed is 2.0x -> live stream plays at 1.0x
+        # and changing speed during the live stream is blocked.
+        await player.set_speed(1, 10, speed=2.0)
+        await player.enqueue(1, 10, "https://radio.example/live", requested_by=1)
+        await player.skip(1, 10)
+        self.assertEqual(voice.play_calls[-1][1], "https://radio.example/live")
+        self.assertEqual(voice.play_calls[-1][2], DEFAULT_PLAYBACK_OPTIONS)
+        self.assertEqual(voice.play_calls[-1][3], 0.0)
+
+        with self.assertRaisesRegex(VoiceError, "live streams"):
+            await player.set_speed(1, 10, speed=1.5)
+
+        await player.aclose()

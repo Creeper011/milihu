@@ -7,24 +7,30 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from pydantic import ValidationError
+from pydantic import HttpUrl, ValidationError
 
 from milihu.exceptions.voice import BackendUnavailableError, VoiceError
 from milihu.types.default.voice import (
     DEFAULT_ICY_POLL_SECONDS,
+    DEFAULT_PLAYBACK_OPTIONS,
     DEFAULT_VOICE_IDLE_TIMEOUT_SECONDS,
 )
 from milihu.types.playlist import ResolvedPlaylist, ResolvedStream
 from milihu.types.voice import (
+    MAX_PLAYBACK_SPEED,
+    MIN_PLAYBACK_SPEED,
     EnqueueResult,
     LoopMode,
+    PlaybackOptions,
     PlayRequest,
     QueueSnapshot,
+    SeekOffset,
     Track,
     TrackStartCallback,
 )
 from milihu.usecases.faces.media import MediaBackend
 from milihu.usecases.faces.playlist import PlaylistResolver
+from milihu.usecases.faces.search import SearchResolver
 from milihu.usecases.faces.voice import StreamProber, VoiceManager
 from milihu.usecases.track_resolver import TrackResolver
 
@@ -46,6 +52,10 @@ class _GuildQueue:
     current: _QueuedTrack | None = None
     upcoming: deque[_QueuedTrack] = field(default_factory=deque)
     loop_mode: LoopMode = LoopMode.OFF
+    playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS
+    playback_offset: float = 0.0
+    segment_started_at: float | None = None
+    pending_speed_restart: bool = False
     idle_task: asyncio.Task[None] | None = None
     icy_task: asyncio.Task[None] | None = None
     status_channel_id: int | None = None
@@ -64,6 +74,7 @@ class MusicPlayerService:
         *,
         stream_probe: StreamProber,
         playlist_resolver: PlaylistResolver | None = None,
+        search_resolver: SearchResolver | None = None,
         idle_timeout: float = DEFAULT_VOICE_IDLE_TIMEOUT_SECONDS,
         icy_poll_interval: float = DEFAULT_ICY_POLL_SECONDS,
         on_track_start: TrackStartCallback | None = None,
@@ -72,6 +83,7 @@ class MusicPlayerService:
         self.media_backend = media_backend
         self.stream_probe = stream_probe
         self.playlist_resolver = playlist_resolver
+        self.search_resolver = search_resolver
         self.resolver = TrackResolver(
             media_backend,
             self.stream_probe,
@@ -133,8 +145,51 @@ class MusicPlayerService:
         state.current = None
         state.upcoming.clear()
         state.loop_mode = LoopMode.OFF
+        state.playback = DEFAULT_PLAYBACK_OPTIONS
+        state.playback_offset = 0.0
+        state.segment_started_at = None
+        state.pending_speed_restart = False
         state.started_at = None
         state.consecutive_fast_failures = 0
+
+    @staticmethod
+    def _clear_playback_timing(state: _GuildQueue) -> None:
+        state.playback_offset = 0.0
+        state.segment_started_at = None
+        state.pending_speed_restart = False
+
+    @staticmethod
+    def _current_track(state: _GuildQueue) -> _QueuedTrack | None:
+        return state.current
+
+    @staticmethod
+    def _current_position_seconds(state: _GuildQueue) -> float:
+        if state.segment_started_at is None:
+            return state.playback_offset
+        elapsed = max(0.0, time.monotonic() - state.segment_started_at)
+        return state.playback_offset + elapsed * state.playback.speed
+
+    @staticmethod
+    def _validate_playback_options(
+        current: PlaybackOptions,
+        *,
+        speed: float | None,
+        preserve_pitch: bool | None,
+    ) -> PlaybackOptions:
+        next_speed = current.speed if speed is None else speed
+        next_preserve_pitch = (
+            current.preserve_pitch if preserve_pitch is None else preserve_pitch
+        )
+        try:
+            return PlaybackOptions(
+                speed=next_speed,
+                preserve_pitch=next_preserve_pitch,
+            )
+        except ValidationError as exc:
+            raise VoiceError(
+                f"Speed must be between {MIN_PLAYBACK_SPEED:g}x "
+                f"and {MAX_PLAYBACK_SPEED:g}x."
+            ) from exc
 
     def _maybe_evict_guild(self, guild_id: int, state: _GuildQueue) -> None:
         if (
@@ -237,6 +292,7 @@ class MusicPlayerService:
         is_direct: bool,
         expected_generation: int,
         schedule_idle_on_error: bool = False,
+        seek_seconds: SeekOffset = 0.0,
     ) -> tuple[bool, int | None, int | None]:
         async with state.lock:
             if (
@@ -248,10 +304,18 @@ class MusicPlayerService:
             self._cancel_icy(state)
             old_status_channel = self._take_status_channel_id(state)
             next_generation = state.generation + 1
+            effective_playback = (
+                DEFAULT_PLAYBACK_OPTIONS if track.is_live else state.playback
+            )
+            effective_seek = 0.0 if track.is_live else seek_seconds
+            now = time.monotonic()
             state.current = _QueuedTrack(
                 track=track, stream_url=None, is_direct=is_direct
             )
-            state.started_at = time.monotonic()
+            state.started_at = now
+            state.playback_offset = effective_seek
+            state.segment_started_at = now
+            state.pending_speed_restart = False
             try:
                 self.voice.play(
                     guild_id,
@@ -259,10 +323,15 @@ class MusicPlayerService:
                     after=lambda err: self._on_track_finished(
                         guild_id, next_generation, err
                     ),
+                    playback=effective_playback,
+                    seek_seconds=effective_seek,
                 )
             except Exception:
                 state.current = None
                 state.started_at = None
+                state.playback_offset = 0.0
+                state.segment_started_at = None
+                state.pending_speed_restart = False
                 if old_status_channel is not None:
                     state.status_channel_id = old_status_channel
                 if (
@@ -337,6 +406,7 @@ class MusicPlayerService:
                         status_to_clear = self._take_status_channel_id(state)
                         state.current = None
                         state.started_at = None
+                        self._clear_playback_timing(state)
                         self._schedule_idle_disconnect(guild_id, state)
                         break
                     candidate = state.upcoming.popleft()
@@ -433,6 +503,7 @@ class MusicPlayerService:
                     else FAST_FAILURE_THRESHOLD_SECONDS
                 )
                 state.started_at = None
+                self._clear_playback_timing(state)
                 if error is not None or elapsed < FAST_FAILURE_THRESHOLD_SECONDS:
                     state.consecutive_fast_failures += 1
                 else:
@@ -690,16 +761,33 @@ class MusicPlayerService:
         *,
         requested_by: int,
     ) -> EnqueueResult:
-        if isinstance(url, str):
-            try:
-                request = PlayRequest.model_validate({"url": url})
-            except ValidationError as exc:
-                raise VoiceError("Use a valid HTTP(S) URL.") from exc
-        else:
-            request = url
-
         self._ensure_can_enqueue(guild_id, channel_id)
-        playlist, stream, warning = await self.resolver.resolve_input(request.url)
+        source_url: HttpUrl
+        playlist: ResolvedPlaylist | None = None
+        stream: ResolvedStream | None = None
+        warning: str | None = None
+        if isinstance(url, str):
+            value = url.strip()
+            if not value:
+                raise VoiceError("Enter a URL or search query.")
+            try:
+                request = PlayRequest.model_validate({"url": value})
+            except ValidationError as exc:
+                if "://" in value or value.lower().startswith(("http:", "https:")):
+                    raise VoiceError("Use a valid HTTP(S) URL.") from exc
+                if self.search_resolver is None:
+                    raise VoiceError("Search is unavailable.") from exc
+                candidates = await self.search_resolver.search(value)
+                source_url, stream = await self.resolver.resolve_first_audio(candidates)
+            else:
+                source_url = request.url
+                playlist, stream, warning = await self.resolver.resolve_input(
+                    source_url
+                )
+        else:
+            source_url = url.url
+            playlist, stream, warning = await self.resolver.resolve_input(source_url)
+
         if playlist is not None:
             return await self._enqueue_playlist(
                 guild_id, channel_id, playlist, requested_by=requested_by
@@ -707,7 +795,7 @@ class MusicPlayerService:
         assert stream is not None
 
         track = Track(
-            source_url=request.url,
+            source_url=source_url,
             title=stream.title,
             requested_by=requested_by,
             is_live=stream.is_live,
@@ -777,6 +865,7 @@ class MusicPlayerService:
             state.consecutive_fast_failures = 0
             state.started_at = None
             state.current = None
+            self._clear_playback_timing(state)
             self.voice.stop(guild_id)
 
             if state.loop_mode is LoopMode.QUEUE:
@@ -799,17 +888,187 @@ class MusicPlayerService:
                 raise VoiceError("Nothing is playing right now.")
             if not self.voice.pause(guild_id):
                 raise VoiceError("Playback is already paused.")
+            state.playback_offset = self._current_position_seconds(state)
+            state.segment_started_at = None
             return state.current.track
 
     async def resume(self, guild_id: int, channel_id: int | None) -> Track:
         state = self._get_state(guild_id)
+        restart_track: Track | None = None
+        restart_is_direct = False
+        expected_gen = 0
+
         async with state.lock:
             self._require_same_channel(guild_id, channel_id)
             if state.current is None:
                 raise VoiceError("Nothing is paused right now.")
-            if not self.voice.resume(guild_id):
+            if not state.pending_speed_restart:
+                if not self.voice.resume(guild_id):
+                    raise VoiceError("Playback is not paused.")
+                state.segment_started_at = time.monotonic()
+                return state.current.track
+            if not self.voice.is_paused(guild_id):
                 raise VoiceError("Playback is not paused.")
-            return state.current.track
+            restart_track = state.current.track
+            restart_is_direct = state.current.is_direct
+            expected_gen = state.generation
+
+        stream_url, resolved_is_direct = await self.resolver.prepare_stream(
+            restart_track.source_url,
+            None,
+            is_direct=restart_is_direct,
+        )
+
+        async with state.lock:
+            self._require_same_channel(guild_id, channel_id)
+            current = self._current_track(state)
+            if state.generation != expected_gen or current is None:
+                raise VoiceError("Nothing is paused right now.")
+            if not self.voice.is_paused(guild_id):
+                raise VoiceError("Playback is not paused.")
+            seek_seconds = 0.0 if restart_track.is_live else state.playback_offset
+            effective_playback = (
+                DEFAULT_PLAYBACK_OPTIONS if restart_track.is_live else state.playback
+            )
+            next_generation = state.generation + 1
+            state.generation = next_generation
+            self.voice.stop(guild_id)
+            now = time.monotonic()
+            try:
+                self.voice.play(
+                    guild_id,
+                    stream_url,
+                    after=lambda err: self._on_track_finished(
+                        guild_id, next_generation, err
+                    ),
+                    playback=effective_playback,
+                    seek_seconds=seek_seconds,
+                )
+            except Exception:
+                state.current = None
+                state.started_at = None
+                self._clear_playback_timing(state)
+                if (
+                    not state.upcoming
+                    and self.voice.connected_channel_id(guild_id) is not None
+                ):
+                    self._schedule_idle_disconnect(guild_id, state)
+                raise
+            state.current = _QueuedTrack(
+                track=restart_track,
+                stream_url=None,
+                is_direct=resolved_is_direct,
+            )
+            state.started_at = now
+            state.playback_offset = seek_seconds
+            state.segment_started_at = now
+            state.pending_speed_restart = False
+            return restart_track
+
+    async def set_speed(
+        self,
+        guild_id: int,
+        channel_id: int | None,
+        *,
+        speed: float | None = None,
+        preserve_pitch: bool | None = None,
+    ) -> PlaybackOptions:
+        state = self._get_state(guild_id)
+        restart_track: Track | None = None
+        restart_is_direct = False
+        expected_gen = 0
+
+        async with state.lock:
+            self._require_same_channel(guild_id, channel_id)
+            if state.current is not None and state.current.track.is_live:
+                raise VoiceError("Cannot change playback speed for live streams.")
+            new_options = self._validate_playback_options(
+                state.playback,
+                speed=speed,
+                preserve_pitch=preserve_pitch,
+            )
+            if new_options == state.playback:
+                return state.playback
+            if new_options.is_normal_speed and state.playback.is_normal_speed:
+                state.playback = new_options
+                return new_options
+            if state.current is None or (
+                not self.voice.is_playing(guild_id)
+                and not self.voice.is_paused(guild_id)
+            ):
+                state.playback = new_options
+                return new_options
+            if self.voice.is_paused(guild_id):
+                state.playback = new_options
+                state.pending_speed_restart = True
+                return new_options
+
+            restart_track = state.current.track
+            restart_is_direct = state.current.is_direct
+            expected_gen = state.generation
+
+        stream_url, resolved_is_direct = await self.resolver.prepare_stream(
+            restart_track.source_url,
+            None,
+            is_direct=restart_is_direct,
+        )
+
+        async with state.lock:
+            self._require_same_channel(guild_id, channel_id)
+            current = self._current_track(state)
+            if current is not None and current.track.is_live:
+                raise VoiceError("Cannot change playback speed for live streams.")
+            new_options = self._validate_playback_options(
+                state.playback,
+                speed=speed,
+                preserve_pitch=preserve_pitch,
+            )
+            if state.generation != expected_gen or current is None:
+                state.playback = new_options
+                if current is not None and self.voice.is_paused(guild_id):
+                    state.pending_speed_restart = True
+                return new_options
+            if self.voice.is_paused(guild_id):
+                state.playback = new_options
+                state.pending_speed_restart = True
+                return new_options
+
+            seek_seconds = self._current_position_seconds(state)
+            next_generation = state.generation + 1
+            state.generation = next_generation
+            state.playback = new_options
+            self.voice.stop(guild_id)
+            now = time.monotonic()
+            try:
+                self.voice.play(
+                    guild_id,
+                    stream_url,
+                    after=lambda err: self._on_track_finished(
+                        guild_id, next_generation, err
+                    ),
+                    playback=new_options,
+                    seek_seconds=seek_seconds,
+                )
+            except Exception:
+                state.current = None
+                state.started_at = None
+                self._clear_playback_timing(state)
+                if (
+                    not state.upcoming
+                    and self.voice.connected_channel_id(guild_id) is not None
+                ):
+                    self._schedule_idle_disconnect(guild_id, state)
+                raise
+            state.current = _QueuedTrack(
+                track=restart_track,
+                stream_url=None,
+                is_direct=resolved_is_direct,
+            )
+            state.started_at = now
+            state.playback_offset = seek_seconds
+            state.segment_started_at = now
+            state.pending_speed_restart = False
+            return new_options
 
     async def stop(self, guild_id: int, channel_id: int | None) -> None:
         state = self._get_state(guild_id)
@@ -886,6 +1145,7 @@ class MusicPlayerService:
             ),
             loop_mode=state.loop_mode if state else LoopMode.OFF,
             is_paused=self.voice.is_paused(guild_id),
+            playback=state.playback if state else DEFAULT_PLAYBACK_OPTIONS,
         )
 
     async def aclose(self) -> None:

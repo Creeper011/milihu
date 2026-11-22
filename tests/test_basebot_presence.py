@@ -72,9 +72,9 @@ class BaseBotPresenceTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(
             set(payloads),
-            {"download", "gif", "caption", "op", "music", "To GIF", "Caption"},
+            {"download", "gif", "caption", "op", "help", "music", "To GIF", "Caption"},
         )
-        for name in ("download", "gif", "caption", "op", "To GIF", "Caption"):
+        for name in ("download", "gif", "caption", "op", "help", "To GIF", "Caption"):
             self.assertEqual(payloads[name]["integration_types"], [0, 1], name)
             self.assertEqual(payloads[name]["contexts"], [0, 1, 2], name)
         self.assertEqual(payloads["music"]["integration_types"], [0])

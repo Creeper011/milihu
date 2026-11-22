@@ -10,12 +10,12 @@ from discord.ext import commands
 from discord.ui import LayoutView
 
 from milihu.discord.cogs._formatter import CogMessageFormatter
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.payload import PayloadTooLargeError
 from milihu.types.default.payload import (
     DEFAULT_FILE_SIZE_LIMIT_BYTES,
     DEFAULT_PAYLOAD_OVERHEAD_BYTES,
 )
-from milihu.types.registry import BotClient
 
 _URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
 _URL_TRAILING_PUNCT = ".,!?;:)'\""

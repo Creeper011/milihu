@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Callable
+from typing import Protocol
 
 from discord import (
     AudioSource,
@@ -17,30 +17,47 @@ from discord import (
     VoiceState,
 )
 
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.voice import VoiceError
-from milihu.types.registry import BotClient
+from milihu.services.ffmpeg.audio_options import build_ffmpeg_options
+from milihu.types.default.voice import (
+    DEFAULT_FFMPEG_BEFORE_OPTIONS,
+    DEFAULT_PLAYBACK_OPTIONS,
+    DISCORD_VOICE_STATUS_MAX_LENGTH,
+)
 from milihu.types.voice import (
     ChannelEmptyCallback,
     ChannelMoveCallback,
     DisconnectCallback,
+    PlaybackOptions,
+    SeekOffset,
     TrackEndCallback,
 )
 
-FFMPEG_BEFORE_OPTIONS = (
-    "-protocol_whitelist http,https,tcp,tls,crypto "
-    "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-)
-FFMPEG_OPTIONS = "-vn"
-DISCORD_VOICE_STATUS_MAX_LENGTH = 500
 
-type AudioSourceFactory = Callable[[str], AudioSource]
+class AudioSourceFactory(Protocol):
+    """Factory that constructs a Discord ``AudioSource`` for a stream URL."""
+
+    def __call__(
+        self,
+        stream_url: str,
+        /,
+        *,
+        playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
+        seek_seconds: SeekOffset = 0.0,
+    ) -> AudioSource: ...
 
 
-def _default_audio_factory(stream_url: str) -> AudioSource:
+def _default_audio_factory(
+    stream_url: str,
+    *,
+    playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
+    seek_seconds: SeekOffset = 0.0,
+) -> AudioSource:
     return FFmpegOpusAudio(
         stream_url,
-        before_options=FFMPEG_BEFORE_OPTIONS,
-        options=FFMPEG_OPTIONS,
+        before_options=DEFAULT_FFMPEG_BEFORE_OPTIONS,
+        options=build_ffmpeg_options(playback, seek_seconds=seek_seconds),
     )
 
 
@@ -155,13 +172,19 @@ class DiscordVoiceManager:
         stream_url: str,
         *,
         after: TrackEndCallback,
+        playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
+        seek_seconds: SeekOffset = 0.0,
     ) -> None:
         vc = self._connected_voice_client(guild_id)
         if vc is None:
             raise VoiceError("I'm not connected to a voice channel.")
 
         loop = asyncio.get_running_loop()
-        source = self._audio_factory(stream_url)
+        source = self._audio_factory(
+            stream_url,
+            playback=playback,
+            seek_seconds=seek_seconds,
+        )
 
         def _threadsafe_after(error: Exception | None) -> None:
             # VoiceClient invokes `after` from its audio thread; hop back to asyncio.

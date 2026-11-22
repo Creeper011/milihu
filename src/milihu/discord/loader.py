@@ -7,8 +7,9 @@ from collections.abc import Mapping
 from discord.ext import commands
 
 from milihu.discord.cogfinder import CogFinder
+from milihu.discord.types.bot import BotClient
+from milihu.discord.types.registry import CogFactory
 from milihu.types.cogpath import CogPath
-from milihu.types.registry import BotClient, CogFactory
 
 
 class CogLoader:

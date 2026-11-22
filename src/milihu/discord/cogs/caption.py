@@ -27,6 +27,7 @@ from discord.ui import (
 )
 
 from milihu.discord.cogs._base import BaseCog
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.payload import PayloadTooLargeError
 from milihu.faces.caption import MediaCaptioner
 from milihu.faces.media import MediaSource
@@ -45,7 +46,6 @@ from milihu.types.default.payload import (
     DEFAULT_FILE_SIZE_LIMIT_BYTES,
     DEFAULT_PAYLOAD_OVERHEAD_BYTES,
 )
-from milihu.types.registry import BotClient
 
 
 class _CaptionModal(Modal, title="Add Caption"):

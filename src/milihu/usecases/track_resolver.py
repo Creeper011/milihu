@@ -1,5 +1,7 @@
 """Audio and playlist resolution orchestrator for music playback."""
 
+import logging
+from collections.abc import Sequence
 from pathlib import PurePath
 
 from pydantic import HttpUrl
@@ -30,6 +32,7 @@ class TrackResolver:
         self.stream_probe = stream_probe
         self.playlist_resolver = playlist_resolver
         self.max_backend_failures = max_backend_failures
+        self._logger = logging.getLogger(__name__)
 
     @staticmethod
     def is_backend_outage(exc: BaseException) -> bool:
@@ -138,6 +141,37 @@ class TrackResolver:
             return [first_track, *tracks[idx + 1 :]], stream
 
         raise last_error or VoiceError("Could not load tracks from this playlist.")
+
+    async def resolve_first_audio(
+        self, urls: Sequence[HttpUrl]
+    ) -> tuple[HttpUrl, ResolvedStream]:
+        """Resolve the first playable candidate URL; abort after consecutive outages."""
+        if not urls:
+            raise VoiceError("No videos found for this search.")
+        backend_failures = 0
+        last_error: VoiceError | None = None
+        for url in urls:
+            try:
+                stream = await self.resolve_audio(url)
+            except BackendUnavailableError as exc:
+                backend_failures += 1
+                last_error = exc
+                self._logger.warning(
+                    "Skipping search candidate %s after backend error: %s", url, exc
+                )
+                if backend_failures >= self.max_backend_failures:
+                    raise
+                continue
+            except VoiceError as exc:
+                backend_failures = 0
+                last_error = exc
+                self._logger.warning(
+                    "Skipping unplayable search candidate %s: %s", url, exc
+                )
+                continue
+            return url, stream
+
+        raise last_error or VoiceError("No videos found for this search.")
 
     async def prepare_stream(
         self,

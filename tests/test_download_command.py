@@ -9,6 +9,7 @@ from discord.ext import commands
 from milihu.app.registry import build_cog_registry
 from milihu.discord.cogs._base import BaseCog
 from milihu.discord.cogs.download import DownloadCog
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.payload import PayloadTooLargeError
 from milihu.faces.download import MediaDownloader
 from milihu.types.default.payload import (
@@ -20,7 +21,6 @@ from milihu.types.download.format import DownloadFormat
 from milihu.types.download.output import DownloadOutput
 from milihu.types.download.quality import DownloadQuality
 from milihu.types.download.request import DownloadRequest
-from milihu.types.registry import BotClient
 from milihu.usecases.downloader_service import DownloaderService
 from milihu.usecases.faces.media import MediaBackend
 

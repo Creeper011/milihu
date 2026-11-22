@@ -17,6 +17,7 @@ from discord.ui import Container, LayoutView, MediaGallery, Modal, TextDisplay
 from milihu.app.registry import build_cog_registry
 from milihu.discord.cogs.caption import CaptionCog
 from milihu.discord.cogs.gif import GifCog
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.payload import PayloadTooLargeError
 from milihu.faces.caption import MediaCaptioner
 from milihu.faces.media import MediaSource
@@ -29,7 +30,6 @@ from milihu.types.default.payload import (
     DEFAULT_FILE_SIZE_LIMIT_BYTES,
     DEFAULT_PAYLOAD_OVERHEAD_BYTES,
 )
-from milihu.types.registry import BotClient
 
 _FAKE_BOT = cast(BotClient, object())
 

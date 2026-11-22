@@ -9,8 +9,8 @@ from discord.ext import commands
 from discord.ui import Container, LayoutView, MediaGallery, TextDisplay
 
 from milihu.discord.cogs._base import BaseCog
+from milihu.discord.types.bot import BotClient
 from milihu.faces.togif import GifConverter
-from milihu.types.registry import BotClient
 
 
 class GifCog(BaseCog):

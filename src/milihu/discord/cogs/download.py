@@ -10,6 +10,7 @@ from discord.ui import File as FileComponent
 from pydantic import ValidationError
 
 from milihu.discord.cogs._base import BaseCog
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.download import DownloadError
 from milihu.faces.download import MediaDownloader
 from milihu.types.default.payload import BYTES_PER_MIB
@@ -19,7 +20,6 @@ from milihu.types.download.output import DownloadOutput
 from milihu.types.download.quality import DownloadQuality
 from milihu.types.download.request import DownloadRequest
 from milihu.types.media import MEDIA_PREFIXES
-from milihu.types.registry import BotClient
 
 
 class DownloadCog(BaseCog):

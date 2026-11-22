@@ -4,11 +4,14 @@ from typing import Protocol
 
 from pydantic import HttpUrl
 
+from milihu.types.default.voice import DEFAULT_PLAYBACK_OPTIONS
 from milihu.types.voice import (
     ChannelEmptyCallback,
     ChannelMoveCallback,
     DisconnectCallback,
+    PlaybackOptions,
     ProbedAudio,
+    SeekOffset,
     StreamMetadata,
     TrackEndCallback,
 )
@@ -35,6 +38,8 @@ class VoiceManager(Protocol):
         stream_url: str,
         *,
         after: TrackEndCallback,
+        playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
+        seek_seconds: SeekOffset = 0.0,
     ) -> None: ...
 
     def stop(self, guild_id: int) -> None: ...

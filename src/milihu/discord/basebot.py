@@ -69,6 +69,7 @@ class MilihuBaseBot(commands.AutoShardedBot):
                 private_channel=True,
             ),
         )
+        options.setdefault("help_command", None)
         super().__init__(
             command_prefix=command_prefix,
             intents=intents or Intents.default(),

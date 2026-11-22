@@ -5,6 +5,7 @@ from typing import Protocol
 from milihu.types.voice import (
     EnqueueResult,
     LoopMode,
+    PlaybackOptions,
     PlayRequest,
     QueueSnapshot,
     Track,
@@ -40,6 +41,15 @@ class MusicPlayer(Protocol):
         channel_id: int | None,
         mode: LoopMode,
     ) -> LoopMode: ...
+
+    async def set_speed(
+        self,
+        guild_id: int,
+        channel_id: int | None,
+        *,
+        speed: float | None = None,
+        preserve_pitch: bool | None = None,
+    ) -> PlaybackOptions: ...
 
     async def remove(
         self,

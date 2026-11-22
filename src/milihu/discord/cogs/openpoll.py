@@ -24,7 +24,7 @@ from discord.ui import (
 )
 
 from milihu.discord.cogs._base import BaseCog
-from milihu.types.registry import BotClient
+from milihu.discord.types.bot import BotClient
 
 
 class _PollAnswerModal(Modal, title="Answer Poll"):

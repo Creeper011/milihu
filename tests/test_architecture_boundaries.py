@@ -41,3 +41,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             self._assert_no_imports(
                 folder, "milihu.usecases", "milihu.services", "aiohttp"
             )
+
+    def test_domain_layers_do_not_import_discord(self) -> None:
+        for folder in ("types", "faces", "usecases"):
+            self._assert_no_imports(folder, "discord")

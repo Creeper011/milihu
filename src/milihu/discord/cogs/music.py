@@ -17,7 +17,6 @@ from discord import (
 )
 from discord.ext import commands
 from discord.ui import (
-    ActionRow,
     Button,
     Container,
     LayoutView,
@@ -28,11 +27,21 @@ from discord.ui import (
 from discord.utils import escape_markdown
 
 from milihu.discord.cogs._base import BaseCog
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.voice import VoiceError
 from milihu.faces.music import MusicPlayer
-from milihu.types.default.voice import DEFAULT_MAX_QUEUE_DISPLAY
-from milihu.types.registry import BotClient
-from milihu.types.voice import LoopMode, QueueSnapshot, Track
+from milihu.types.default.voice import (
+    DEFAULT_MAX_QUEUE_DISPLAY,
+    DEFAULT_PLAYBACK_OPTIONS,
+)
+from milihu.types.voice import (
+    MAX_PLAYBACK_SPEED,
+    MIN_PLAYBACK_SPEED,
+    LoopMode,
+    PlaybackOptions,
+    QueueSnapshot,
+    Track,
+)
 
 _COLOR_PLAYING = 0x5865F2
 _COLOR_PAUSED = 0xFEE75C
@@ -46,24 +55,6 @@ class _NowPlayingView(LayoutView):
         super().__init__(timeout=None)
         self.player = player
         self.guild_id = guild_id
-
-        self._pause_button: Button[_NowPlayingView] = Button(
-            style=ButtonStyle.secondary,
-            emoji="⏸️",
-        )
-        self._pause_button.callback = self._on_pause_resume
-
-        self._skip_button: Button[_NowPlayingView] = Button(
-            style=ButtonStyle.secondary,
-            emoji="⏭️",
-        )
-        self._skip_button.callback = self._on_skip
-
-        self._stop_button: Button[_NowPlayingView] = Button(
-            style=ButtonStyle.secondary,
-            emoji="⏹️",
-        )
-        self._stop_button.callback = self._on_stop
 
         self._queue_button: Button[_NowPlayingView] = Button(
             style=ButtonStyle.secondary,
@@ -85,95 +76,26 @@ class _NowPlayingView(LayoutView):
                         url=str(track.source_url),
                     ),
                 ),
-                TextDisplay[_NowPlayingView](f"### {title}"),
-                TextDisplay[_NowPlayingView](
-                    f"-# Requested by: <@{track.requested_by}>"
-                ),
-                Separator[_NowPlayingView](
-                    visible=True,
-                    spacing=SeparatorSpacing.small,
-                ),
-                ActionRow[_NowPlayingView](
-                    self._pause_button,
-                    self._skip_button,
-                    self._stop_button,
-                    self._queue_button,
+                TextDisplay[_NowPlayingView](f"**{title}**"),
+                Section[_NowPlayingView](
+                    TextDisplay[_NowPlayingView](
+                        f"-# Requested by: <@{track.requested_by}>"
+                    ),
+                    accessory=self._queue_button,
                 ),
                 accent_colour=accent,
             )
         )
 
-    @staticmethod
-    def _voice_context(interaction: Interaction[BotClient]) -> tuple[int, int | None]:
-        if interaction.guild_id is None:
-            raise VoiceError("Music controls can only be used in a server.")
-        channel_id = (
-            interaction.user.voice.channel.id
-            if isinstance(interaction.user, Member)
-            and interaction.user.voice is not None
-            and interaction.user.voice.channel is not None
-            else None
-        )
-        return interaction.guild_id, channel_id
-
-    def _disable_controls(self) -> None:
-        self._pause_button.disabled = True
-        self._skip_button.disabled = True
-        self._stop_button.disabled = True
-
-    @staticmethod
-    async def _reply_error(
-        interaction: Interaction[BotClient], exc: VoiceError
-    ) -> None:
-        await interaction.response.send_message(
-            str(exc),
-            ephemeral=True,
-            allowed_mentions=AllowedMentions.none(),
-        )
-
-    async def _on_pause_resume(self, interaction: Interaction[BotClient]) -> None:
-        try:
-            guild_id, channel_id = self._voice_context(interaction)
-            if self.player.get_queue(guild_id).is_paused:
-                await self.player.resume(guild_id, channel_id)
-                self._pause_button.emoji = "⏸️"
-                self._pause_button.style = ButtonStyle.secondary
-            else:
-                await self.player.pause(guild_id, channel_id)
-                self._pause_button.emoji = "▶️"
-                self._pause_button.style = ButtonStyle.primary
-        except VoiceError as exc:
-            await self._reply_error(interaction, exc)
-            return
-        await interaction.response.edit_message(view=self)
-
-    async def _on_skip(self, interaction: Interaction[BotClient]) -> None:
-        try:
-            guild_id, channel_id = self._voice_context(interaction)
-            await self.player.skip(guild_id, channel_id)
-        except VoiceError as exc:
-            await self._reply_error(interaction, exc)
-            return
-        self._disable_controls()
-        await interaction.response.edit_message(view=self)
-
-    async def _on_stop(self, interaction: Interaction[BotClient]) -> None:
-        try:
-            guild_id, channel_id = self._voice_context(interaction)
-            await self.player.stop(guild_id, channel_id)
-        except VoiceError as exc:
-            await self._reply_error(interaction, exc)
-            return
-        self._disable_controls()
-        await interaction.response.edit_message(view=self)
-
     async def _on_queue(self, interaction: Interaction[BotClient]) -> None:
-        try:
-            guild_id, _ = self._voice_context(interaction)
-        except VoiceError as exc:
-            await self._reply_error(interaction, exc)
+        if interaction.guild_id is None:
+            await interaction.response.send_message(
+                "Music controls can only be used in a server.",
+                ephemeral=True,
+                allowed_mentions=AllowedMentions.none(),
+            )
             return
-        snapshot = self.player.get_queue(guild_id)
+        snapshot = self.player.get_queue(interaction.guild_id)
         await interaction.response.send_message(
             view=MusicCog.build_queue_view(snapshot),
             ephemeral=True,
@@ -228,7 +150,7 @@ class MusicCog(BaseCog):
             now_line = "_Nothing is playing right now._"
         small_sep = SeparatorSpacing.small
         items: list[TextDisplay[LayoutView] | Separator[LayoutView]] = [
-            TextDisplay[LayoutView]("## 📜 Music Queue"),
+            TextDisplay[LayoutView]("### 📜 Music Queue"),
             Separator[LayoutView](visible=True, spacing=small_sep),
             TextDisplay[LayoutView](now_line),
         ]
@@ -246,12 +168,18 @@ class MusicCog(BaseCog):
             items.append(Separator[LayoutView](visible=True, spacing=small_sep))
             items.append(TextDisplay[LayoutView]("\n".join(lines)))
 
-        items.append(Separator[LayoutView](visible=True, spacing=small_sep))
-        items.append(
-            TextDisplay[LayoutView](
-                f"-# Loop: `{snapshot.loop_mode}` • Up next: {len(snapshot.upcoming)}"
-            )
+        footer = (
+            f"-# Loop: `{snapshot.loop_mode}` • Up next: {len(snapshot.upcoming)}"
         )
+        if snapshot.playback != DEFAULT_PLAYBACK_OPTIONS:
+            pitch_label = (
+                "pitch preserved"
+                if snapshot.playback.preserve_pitch
+                else "pitch shifted"
+            )
+            footer = f"{footer} • Speed: `{snapshot.playback.speed:g}x` ({pitch_label})"
+        items.append(Separator[LayoutView](visible=True, spacing=small_sep))
+        items.append(TextDisplay[LayoutView](footer))
         accent = _COLOR_PAUSED if snapshot.is_paused else _COLOR_PLAYING
         return LayoutView().add_item(
             Container[LayoutView](*items, accent_colour=accent)
@@ -289,12 +217,98 @@ class MusicCog(BaseCog):
         if ctx.invoked_subcommand is None:
             await self.queue(ctx)
 
+    @commands.command(name="mp")
+    @commands.guild_only()
+    async def quick_play(self, ctx: commands.Context[BotClient], *, url: str) -> None:
+        """Play audio with the short prefix command."""
+        await self.play(ctx, url=url)
+
+    @commands.command(name="ms")
+    @commands.guild_only()
+    async def quick_skip(self, ctx: commands.Context[BotClient]) -> None:
+        """Skip the current track with the short prefix command."""
+        await self.skip(ctx)
+
+    @commands.command(name="mst")
+    @commands.guild_only()
+    async def quick_stop(self, ctx: commands.Context[BotClient]) -> None:
+        """Stop playback with the short prefix command."""
+        await self.stop(ctx)
+
+    @commands.command(name="mpa")
+    @commands.guild_only()
+    async def quick_pause(self, ctx: commands.Context[BotClient]) -> None:
+        """Pause playback with the short prefix command."""
+        await self.pause(ctx)
+
+    @commands.command(name="mr")
+    @commands.guild_only()
+    async def quick_resume(self, ctx: commands.Context[BotClient]) -> None:
+        """Resume playback with the short prefix command."""
+        await self.resume(ctx)
+
+    @commands.command(name="mq")
+    @commands.guild_only()
+    async def quick_queue(self, ctx: commands.Context[BotClient]) -> None:
+        """Show the queue with the short prefix command."""
+        await self.queue(ctx)
+
+    @commands.command(name="ml")
+    @commands.guild_only()
+    async def quick_loop(
+        self,
+        ctx: commands.Context[BotClient],
+        mode: Literal["off", "track", "queue"],
+    ) -> None:
+        """Set loop mode with the short prefix command."""
+        await self.loop(ctx, mode)
+
+    @commands.command(name="mrm")
+    @commands.guild_only()
+    async def quick_remove(
+        self, ctx: commands.Context[BotClient], position: int
+    ) -> None:
+        """Remove a queued track with the short prefix command."""
+        await self.remove(ctx, position)
+
+    @commands.command(name="mc")
+    @commands.guild_only()
+    async def quick_clear(self, ctx: commands.Context[BotClient]) -> None:
+        """Clear the queue with the short prefix command."""
+        await self.clear(ctx)
+
+    @commands.command(name="msh")
+    @commands.guild_only()
+    async def quick_shuffle(self, ctx: commands.Context[BotClient]) -> None:
+        """Shuffle the queue with the short prefix command."""
+        await self.shuffle(ctx)
+
+    @commands.command(name="msp")
+    @commands.guild_only()
+    async def quick_speed(
+        self,
+        ctx: commands.Context[BotClient],
+        speed: commands.Range[float, MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED],
+    ) -> None:
+        """Set playback speed with the short prefix command."""
+        await self.speed(ctx, speed=speed)
+
+    @commands.command(name="mpp")
+    @commands.guild_only()
+    async def quick_pitch(
+        self,
+        ctx: commands.Context[BotClient],
+        preserve: bool | None = None,
+    ) -> None:
+        """Toggle or set pitch preservation with the short prefix command."""
+        await self.pitch(ctx, preserve=preserve)
+
     @music.command(name="play", aliases=["p"])
     @app_commands.describe(
-        url="Media or YouTube playlist URL to stream audio from."
+        url="Search query or media/YouTube playlist URL to play."
     )
-    async def play(self, ctx: commands.Context[BotClient], url: str) -> None:
-        """Play or enqueue audio from a URL."""
+    async def play(self, ctx: commands.Context[BotClient], *, url: str) -> None:
+        """Play or enqueue audio from a URL or search query."""
         guild_id = self._guild_id(ctx)
         channel_id = self._member_voice_channel_id(ctx)
         in_voice_chat = channel_id is not None and ctx.channel.id == channel_id
@@ -410,6 +424,70 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
+    @staticmethod
+    def _format_playback_summary(playback: PlaybackOptions) -> str:
+        pitch_state = "on" if playback.preserve_pitch else "off"
+        return f"`{playback.speed:g}x` (preserve pitch: `{pitch_state}`)"
+
+    @music.command(name="speed", aliases=["sp"])
+    @app_commands.describe(
+        speed=(
+            f"Playback speed multiplier ({MIN_PLAYBACK_SPEED:g} to "
+            f"{MAX_PLAYBACK_SPEED:g}, 1.0 = normal)."
+        ),
+        preserve_pitch=(
+            "Keep the original pitch when changing speed "
+            "(keeps current setting if omitted)."
+        ),
+    )
+    async def speed(
+        self,
+        ctx: commands.Context[BotClient],
+        speed: commands.Range[float, MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED],
+        preserve_pitch: bool | None = None,
+    ) -> None:
+        """Set playback speed and optionally pitch preservation."""
+        guild_id = self._guild_id(ctx)
+        async with ctx.typing():
+            updated = await self.player.set_speed(
+                guild_id,
+                self._member_voice_channel_id(ctx),
+                speed=speed,
+                preserve_pitch=preserve_pitch,
+            )
+        await ctx.reply(
+            f"Playback speed set to {self._format_playback_summary(updated)}.",
+            allowed_mentions=AllowedMentions.none(),
+        )
+
+    @music.command(name="pitch", aliases=["pp"])
+    @app_commands.describe(
+        preserve="Set pitch preservation on or off (leave blank to toggle).",
+    )
+    async def pitch(
+        self,
+        ctx: commands.Context[BotClient],
+        preserve: bool | None = None,
+    ) -> None:
+        """Toggle or set pitch preservation for playback speed."""
+        guild_id = self._guild_id(ctx)
+        target = (
+            not self.player.get_queue(guild_id).playback.preserve_pitch
+            if preserve is None
+            else preserve
+        )
+        async with ctx.typing():
+            updated = await self.player.set_speed(
+                guild_id,
+                self._member_voice_channel_id(ctx),
+                preserve_pitch=target,
+            )
+        pitch_state = "on" if updated.preserve_pitch else "off"
+        await ctx.reply(
+            f"Preserve pitch set to `{pitch_state}` (speed: `{updated.speed:g}x`).",
+            allowed_mentions=AllowedMentions.none(),
+        )
+
     @music.command(name="remove", aliases=["rm"])
     @app_commands.describe(position="1-based position in the upcoming queue.")
     async def remove(self, ctx: commands.Context[BotClient], position: int) -> None:
@@ -467,7 +545,14 @@ class MusicCog(BaseCog):
                 allowed_mentions=AllowedMentions.none(),
             )
             return
-        if isinstance(original, (commands.BadArgument, commands.BadLiteralArgument)):
+        if isinstance(
+            original,
+            (
+                commands.BadArgument,
+                commands.BadLiteralArgument,
+                commands.MissingRequiredArgument,
+            ),
+        ):
             await ctx.reply(
                 str(original),
                 ephemeral=True,

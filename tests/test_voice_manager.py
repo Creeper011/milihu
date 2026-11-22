@@ -14,12 +14,14 @@ from discord import (
     VoiceState,
 )
 
+from milihu.discord.types.bot import BotClient
 from milihu.exceptions.voice import VoiceError
-from milihu.services.discord_voice import (
-    FFMPEG_BEFORE_OPTIONS,
-    DiscordVoiceManager,
+from milihu.services.discord_voice import DiscordVoiceManager
+from milihu.types.default.voice import (
+    DEFAULT_FFMPEG_BEFORE_OPTIONS,
+    DEFAULT_PLAYBACK_OPTIONS,
 )
-from milihu.types.registry import BotClient
+from milihu.types.voice import PlaybackOptions, SeekOffset
 
 
 def _as_bot(bot: object) -> BotClient:
@@ -235,7 +237,7 @@ class DiscordVoiceManagerTests(unittest.IsolatedAsyncioTestCase):
     def test_ffmpeg_protocol_whitelist_restricts_protocols(self) -> None:
         self.assertIn(
             "-protocol_whitelist http,https,tcp,tls,crypto",
-            FFMPEG_BEFORE_OPTIONS,
+            DEFAULT_FFMPEG_BEFORE_OPTIONS,
         )
 
     async def test_connect_move_and_non_bot_member_count(self) -> None:
@@ -331,8 +333,15 @@ class DiscordVoiceManagerTests(unittest.IsolatedAsyncioTestCase):
         bot.guilds = {1: guild}
 
         sources: list[FakeAudioSource] = []
+        factory_calls: list[tuple[str, PlaybackOptions, float]] = []
 
-        def _make_source(_url: str) -> AudioSource:
+        def _make_source(
+            url: str,
+            *,
+            playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
+            seek_seconds: SeekOffset = 0.0,
+        ) -> AudioSource:
+            factory_calls.append((url, playback, seek_seconds))
             src = FakeAudioSource()
             sources.append(src)
             return src
@@ -347,9 +356,20 @@ class DiscordVoiceManagerTests(unittest.IsolatedAsyncioTestCase):
             received.append(err)
             done.set()
 
-        manager.play(1, "https://cdn.example/audio.opus", after=on_after)
+        custom_playback = PlaybackOptions(speed=1.5, preserve_pitch=False)
+        manager.play(
+            1,
+            "https://cdn.example/audio.opus",
+            after=on_after,
+            playback=custom_playback,
+            seek_seconds=12.5,
+        )
         assert guild.voice_client is not None
         self.assertEqual(guild.voice_client.played_sources, [sources[0]])
+        self.assertEqual(
+            factory_calls,
+            [("https://cdn.example/audio.opus", custom_playback, 12.5)],
+        )
         self.assertTrue(manager.is_playing(1))
 
         # Pause, resume, and stop delegate to the voice client.
