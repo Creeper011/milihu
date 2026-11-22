@@ -1,17 +1,16 @@
 import re
 import time
 import unittest
-from typing import Any, Self, cast, override
+from typing import Any, Self, cast
 
 from discord import HTTPException, app_commands
 from discord.ext import commands
 
+from milihu.app.registry import build_cog_registry
 from milihu.discord.cogs._base import BaseCog
 from milihu.discord.cogs.download import DownloadCog
-from milihu.discord.registry import build_cog_registry
 from milihu.exceptions.payload import PayloadTooLargeError
-from milihu.services.downloader_service import DownloaderService
-from milihu.services.faces.media import MediaBackend
+from milihu.faces.download import MediaDownloader
 from milihu.types.default.payload import (
     BYTES_PER_MIB,
     DEFAULT_FILE_SIZE_LIMIT_BYTES,
@@ -22,11 +21,13 @@ from milihu.types.download.output import DownloadOutput
 from milihu.types.download.quality import DownloadQuality
 from milihu.types.download.request import DownloadRequest
 from milihu.types.registry import BotClient
+from milihu.usecases.downloader_service import DownloaderService
+from milihu.usecases.faces.media import MediaBackend
 
 _FAKE_BOT = cast(BotClient, object())
 
 
-class Downloader(DownloaderService):
+class Downloader:
     def __init__(
         self,
         filename: str = "video.mp4",
@@ -35,7 +36,6 @@ class Downloader(DownloaderService):
         resolution: str | None = "1280x720",
         codec: str | None = "h264",
     ) -> None:
-        super().__init__(None)
         self.filename = filename
         self.ctx = ctx
         self.resolution = resolution
@@ -43,7 +43,6 @@ class Downloader(DownloaderService):
         self.downloaded_while_typing: bool | None = None
         self.request: DownloadRequest | None = None
 
-    @override
     async def download(
         self, url: DownloadRequest | str, *, max_bytes: int
     ) -> DownloadOutput:
@@ -109,7 +108,7 @@ def _as_ctx(ctx: object) -> commands.Context[BotClient]:
     return cast(commands.Context[BotClient], ctx)
 
 
-def _make_cog(downloader: DownloaderService) -> DownloadCog:
+def _make_cog(downloader: MediaDownloader) -> DownloadCog:
     cog = DownloadCog(_FAKE_BOT, downloader)
     cog.download.cog = cog
     return cog
@@ -122,6 +121,8 @@ class DownloadCommandTests(unittest.IsolatedAsyncioTestCase):
         cog = build_cog_registry(backend)[DownloadCog](bot)
         self.assertIsInstance(cog, DownloadCog)
         assert isinstance(cog, DownloadCog)
+        self.assertIsInstance(cog.downloader, DownloaderService)
+        assert isinstance(cog.downloader, DownloaderService)
         self.assertIs(cog.downloader.backend, backend)
         self.assertFalse(hasattr(bot, "media_backend"))
 
@@ -173,11 +174,7 @@ class DownloadCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_download_replies_with_temporary_url_when_file_exceeds_limit(
         self,
     ) -> None:
-        class LargeDownloader(DownloaderService):
-            def __init__(self) -> None:
-                super().__init__(None)
-
-            @override
+        class LargeDownloader:
             async def download(
                 self, url: DownloadRequest | str, *, max_bytes: int
             ) -> DownloadOutput:
@@ -274,7 +271,7 @@ class DownloadCommandTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(url=url, format=format, quality=quality):
                 ctx = Context()
-                cog = _make_cog(DownloaderService(None))
+                cog = _make_cog(Downloader())
                 await cog.download(_as_ctx(ctx), url, format, quality)
 
                 assert ctx.reply_kwargs is not None

@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Self
 from unittest.mock import patch
 
-from milihu.services.core.cobalt import Cobalt
+from milihu.services.cobalt.client import Cobalt
 from milihu.types.download.format import DownloadFormat
 from milihu.types.download.quality import DownloadQuality
 
@@ -53,7 +53,7 @@ class CobaltTests(unittest.IsolatedAsyncioTestCase):
                 "filename": "a.mp4",
             }
         )
-        with patch("milihu.services.core.cobalt.ClientSession", return_value=session):
+        with patch("milihu.services.cobalt.client.ClientSession", return_value=session):
             async with Cobalt("http://127.0.0.1:9000") as backend:
                 first, second = await asyncio.gather(
                     backend.resolve(
@@ -112,7 +112,7 @@ class CobaltTests(unittest.IsolatedAsyncioTestCase):
         ]:
             session = Session(raw)
             with patch(
-                "milihu.services.core.cobalt.ClientSession", return_value=session
+                "milihu.services.cobalt.client.ClientSession", return_value=session
             ):
                 async with Cobalt("http://127.0.0.1:9000") as backend:
                     self.assertEqual(
@@ -130,7 +130,7 @@ class CobaltTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         with patch(
-            "milihu.services.core.cobalt.ClientSession", return_value=session
+            "milihu.services.cobalt.client.ClientSession", return_value=session
         ):
             async with Cobalt("http://127.0.0.1:9000") as backend:
                 result = await backend.resolve("https://example.com")

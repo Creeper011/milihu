@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from aiohttp import FormData
 
-from milihu.services.core.litterbox import LITTERBOX_API_URL, Litterbox
+from milihu.services.litterbox import LITTERBOX_API_URL, Litterbox
 from milihu.types.default.upload import DEFAULT_UPLOAD_LIFETIME
 from milihu.types.upload import UploadLifetime
 
@@ -54,7 +54,7 @@ class LitterboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_uploads_file_with_default_lifetime(self) -> None:
         session = Session()
         with patch(
-            "milihu.services.core.litterbox.ClientSession", return_value=session
+            "milihu.services.litterbox.ClientSession", return_value=session
         ):
             url = await Litterbox().upload(b"video-bytes", "clip.mp4")
 
@@ -72,7 +72,7 @@ class LitterboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_non_url_response(self) -> None:
         session = Session(Response("Invalid lifetime"))
         with patch(
-            "milihu.services.core.litterbox.ClientSession", return_value=session
+            "milihu.services.litterbox.ClientSession", return_value=session
         ):
             with self.assertRaisesRegex(RuntimeError, "Invalid lifetime"):
                 await Litterbox().upload(b"video-bytes", "clip.mp4")

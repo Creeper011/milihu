@@ -1,20 +1,53 @@
 """Generic progressive preset fitting for byte-budgeted payloads."""
 
-from collections.abc import Awaitable, Callable, Iterable
-from typing import Self
+import asyncio
+import contextlib
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from pathlib import Path
+from typing import Any
 
 from milihu.exceptions.payload import PayloadTooLargeError
 
 
 class PayloadFitter:
-    """Singleton helper that fits generated payloads within a target byte budget."""
+    """Fit generated payloads within a target byte budget using binary search."""
 
-    _instance: Self | None = None
+    @staticmethod
+    async def render_within_budget(
+        run_render: Callable[[], Coroutine[Any, Any, None]],
+        output_path: Path,
+        max_bytes: int | None,
+        *,
+        poll_seconds: float = 0.2,
+    ) -> bytes | None:
+        """Run ``run_render`` and abort early if ``output_path`` passes budget."""
+        output_path.unlink(missing_ok=True)
+        task = asyncio.create_task(run_render())
+        try:
+            if max_bytes is not None:
+                while not task.done():
+                    await asyncio.wait({task}, timeout=poll_seconds)
+                    if task.done():
+                        break
+                    try:
+                        current_size = output_path.stat().st_size
+                    except FileNotFoundError:
+                        continue
+                    if current_size > max_bytes:
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task
+                        return None
 
-    def __new__(cls) -> Self:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+            await task
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            raise
+
+        return output_path.read_bytes()
 
     async def fit[PresetT](
         self,

@@ -2,8 +2,9 @@
 
 from typing import Self, Unpack
 
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
 
+from milihu.exceptions.media import MediaBackendError
 from milihu.types.download.format import DownloadFormat
 from milihu.types.media import (
     MediaError,
@@ -68,9 +69,14 @@ class Cobalt:
             else:
                 body["downloadMode"] = "audio"
                 body["audioFormat"] = fmt
-        async with self.session.post("/", json=body) as response:
-            response.raise_for_status()
-            data = await response.json()
+        try:
+            async with self.session.post("/", json=body) as response:
+                response.raise_for_status()
+                data = await response.json()
+        except ClientResponseError as exc:
+            raise MediaBackendError(str(exc), status=exc.status) from exc
+        except (ClientError, TimeoutError) as exc:
+            raise MediaBackendError(str(exc)) from exc
 
         match data.get("status"):
             case "tunnel" | "redirect" as status:

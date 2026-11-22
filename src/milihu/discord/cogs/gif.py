@@ -1,9 +1,10 @@
 """Cog for converting images and videos into GIFs."""
 
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import override
+from urllib.parse import unquote, urlsplit
 
-from discord import File, Interaction, Message, app_commands
+from discord import Attachment, File, Interaction, Message, app_commands
 from discord.ext import commands
 from discord.ui import Container, LayoutView, MediaGallery, TextDisplay
 
@@ -58,12 +59,27 @@ class GifCog(BaseCog):
         return view
 
     @commands.hybrid_command(name="gif")
-    async def to_gif(self, ctx: commands.Context[BotClient]) -> None:
-        """Convert an attached or replied-to image/video to a GIF."""
-        attachment = self.extract_attachment(ctx)
-        if attachment is None or not self.converter.is_supported(attachment):
+    @app_commands.describe(
+        attachment="Image or video file to convert to GIF.",
+        url="Direct media or GIF link to convert.",
+    )
+    async def to_gif(
+        self,
+        ctx: commands.Context[BotClient],
+        attachment: Attachment | None = None,
+        url: str | None = None,
+    ) -> None:
+        """Convert an attached or replied-to image/video/link to a GIF."""
+        target: Attachment | str | None = (
+            attachment
+            if attachment is not None
+            else (url if url is not None else self.extract_media(ctx))
+        )
+        if target is None or (
+            not isinstance(target, str) and not self.converter.is_supported(target)
+        ):
             await ctx.reply(
-                "Please attach or reply to a valid image or video.",
+                "Please attach or reply to a valid image, video, or media link.",
                 ephemeral=True,
             )
             return
@@ -72,14 +88,21 @@ class GifCog(BaseCog):
         async with ctx.typing():
             try:
                 gif_bytes = await self.converter.convert(
-                    attachment,
+                    target,
                     max_bytes=max_bytes,
                 )
+            except ValueError as exc:
+                await ctx.reply(str(exc), ephemeral=True)
+                return
             except RuntimeError:
                 await ctx.reply("Failed to convert the file to GIF.")
                 return
 
-            output_name = f"{Path(attachment.filename).stem}.gif"
+            if isinstance(target, str):
+                stem = PurePath(unquote(urlsplit(target).path)).stem.strip() or "media"
+            else:
+                stem = Path(target.filename).stem
+            output_name = f"{stem}.gif"
             await self.reply_file(
                 ctx,
                 gif_bytes,

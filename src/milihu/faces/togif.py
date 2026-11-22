@@ -2,17 +2,9 @@
 
 from typing import Protocol
 
+from milihu.faces.media import MediaSource
 
-class MediaSource(Protocol):
-    """Protocol for readable media inputs with metadata."""
-
-    filename: str
-    content_type: str | None
-    size: int
-
-    async def read(self) -> bytes:
-        """Read and return raw media bytes."""
-        ...
+__all__ = ["GifConverter", "MediaSource"]
 
 
 class GifConverter(Protocol):
@@ -24,9 +16,9 @@ class GifConverter(Protocol):
 
     async def convert(
         self,
-        source: MediaSource,
+        source: MediaSource | str,
         *,
         max_bytes: int | None = None,
     ) -> bytes:
-        """Validate, read, and convert ``source`` into GIF bytes within ``max_bytes``."""
+        """Validate, read, and convert ``source`` into GIF bytes within budget."""
         ...

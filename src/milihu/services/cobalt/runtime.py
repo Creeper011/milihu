@@ -6,7 +6,7 @@ from pathlib import Path
 
 from aiohttp import ClientError
 
-from milihu.services.core.cobalt import Cobalt
+from milihu.services.cobalt.client import Cobalt
 
 COBALT_URL = "http://127.0.0.1:9000/"
 
@@ -29,7 +29,13 @@ class CobaltRuntime:
             raise RuntimeError(
                 f"Cannot start Cobalt: Docker is unavailable: {exc}"
             ) from exc
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            raise
         if process.returncode:
             detail = stderr.decode(errors="replace").strip()
             raise RuntimeError(f"Cannot start Cobalt: {detail or 'Docker failed'}")
@@ -62,8 +68,10 @@ class CobaltRuntime:
             raise
 
     async def __aexit__(self, *_: object) -> None:
-        await self.backend.__aexit__()
-        if self.container_id is not None:
-            with contextlib.suppress(RuntimeError):
-                await self._docker("stop", "--time=1", self.container_id)
-            self.container_id = None
+        try:
+            await self.backend.__aexit__()
+        finally:
+            if self.container_id is not None:
+                with contextlib.suppress(RuntimeError):
+                    await self._docker("stop", "--time=1", self.container_id)
+                self.container_id = None

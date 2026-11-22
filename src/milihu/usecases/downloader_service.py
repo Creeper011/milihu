@@ -4,31 +4,33 @@ import logging
 from pathlib import PurePath
 from time import perf_counter
 
-from aiohttp import ClientSession, ClientTimeout
-
+from milihu.exceptions.download import DownloadError
 from milihu.exceptions.payload import PayloadTooLargeError
-from milihu.services.core.litterbox import Litterbox
-from milihu.services.core.payload_fitter import PayloadFitter
-from milihu.services.faces.media import MediaBackend
 from milihu.types.default.upload import DEFAULT_MAX_UPLOAD_BYTES
 from milihu.types.download.format import AUDIO_FORMATS
 from milihu.types.download.output import DownloadOutput
 from milihu.types.download.quality import QUALITY_LADDER, DownloadQuality
 from milihu.types.download.request import DownloadRequest
 from milihu.types.media import MediaFile
+from milihu.usecases.faces.http import HttpFetcher
+from milihu.usecases.faces.media import MediaBackend
+from milihu.usecases.faces.upload import FileUploader
+from milihu.usecases.payload_fitter import PayloadFitter
 
 
 class DownloaderService:
     def __init__(
         self,
         backend: MediaBackend | None,
-        uploader: Litterbox | None = None,
-        payload_fitter: PayloadFitter | None = None,
         *,
+        uploader: FileUploader,
+        fetcher: HttpFetcher,
+        payload_fitter: PayloadFitter | None = None,
         max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES,
     ) -> None:
         self.backend = backend
-        self.uploader = uploader or Litterbox()
+        self.uploader = uploader
+        self.fetcher = fetcher
         self.payload_fitter = payload_fitter or PayloadFitter()
         self.max_upload_bytes = max_upload_bytes
 
@@ -47,13 +49,13 @@ class DownloaderService:
                 video_quality=quality,
             )
         if result["status"] == "error":
-            raise RuntimeError(f"Media backend rejected this URL: {result['code']}")
+            raise DownloadError(f"Media backend rejected this URL: {result['code']}")
         if result["status"] != "file":
-            raise RuntimeError("This URL requires media selection or processing.")
+            raise DownloadError("This URL requires media selection or processing.")
 
         path = PurePath(result["filename"])
         if request.format is not None and path.suffix.lower() != f".{request.format}":
-            raise RuntimeError(
+            raise DownloadError(
                 f"This URL does not offer the {request.format.upper()} format."
             )
         return result, path
@@ -68,13 +70,13 @@ class DownloaderService:
             status,
             content_length,
         )
-        raise RuntimeError("Media source returned an empty file.")
+        raise DownloadError("Media source returned an empty file.")
 
     async def download(
         self, url: DownloadRequest | str, *, max_bytes: int
     ) -> DownloadOutput:
         if self.backend is None:
-            raise RuntimeError("Media backend is not configured.")
+            raise DownloadError("Media backend is not configured.")
 
         if isinstance(url, str):
             request = DownloadRequest.model_validate({"url": url})
@@ -103,10 +105,9 @@ class DownloaderService:
                 first_result["filename"],
             )
 
-        async with ClientSession(timeout=ClientTimeout(total=120)) as session:
+        async with self.fetcher.open_session() as session:
             data = bytearray()
             async with session.get(first_result["url"]) as response:
-                response.raise_for_status()
                 if (
                     response.content_length is not None
                     and response.content_length > max_bytes
@@ -121,7 +122,7 @@ class DownloaderService:
                         limit_bytes, size=response.content_length
                     )
                 else:
-                    async for chunk in response.content.iter_chunked(64 * 1024):
+                    async for chunk in response.iter_chunks(64 * 1024):
                         data.extend(chunk)
                         if (
                             len(data) > max_bytes
@@ -156,7 +157,6 @@ class DownloaderService:
                     is_lowest = quality == remaining[-1]
                     budget = limit_bytes if is_lowest else max_bytes
                     async with session.get(res["url"]) as resp:
-                        resp.raise_for_status()
                         if (
                             resp.content_length is not None
                             and resp.content_length > budget
@@ -167,7 +167,7 @@ class DownloaderService:
                                 )
                             return None
                         buf = bytearray()
-                        async for chunk in resp.content.iter_chunked(64 * 1024):
+                        async for chunk in resp.iter_chunks(64 * 1024):
                             buf.extend(chunk)
                             if len(buf) > budget:
                                 if is_lowest:

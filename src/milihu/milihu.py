@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 
 from milihu.app.app import MilihuApp
-from milihu.services.core.cobalt_runtime import CobaltRuntime
+from milihu.services.cobalt.runtime import CobaltRuntime
 from milihu.types.default.env import DEFAULT_ENV_PATH
 from milihu.types.default.prefix import DEFAULT_PREFIX
 

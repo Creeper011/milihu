@@ -7,6 +7,14 @@ from milihu.types.download.quality import DownloadQuality
 
 MediaPrefix = Literal["image/", "video/"]
 
+StaticImageExtension = Literal[
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".bmp",
+]
+
 MediaExtension = Literal[
     ".png",
     ".jpg",
@@ -21,7 +29,9 @@ MediaExtension = Literal[
 ]
 
 MEDIA_PREFIXES: tuple[str, ...] = get_args(MediaPrefix)
+STATIC_IMAGE_EXTENSIONS: frozenset[str] = frozenset(get_args(StaticImageExtension))
 MEDIA_EXTENSIONS: frozenset[str] = frozenset(get_args(MediaExtension))
+CAPTION_MEDIA_EXTENSIONS: frozenset[str] = MEDIA_EXTENSIONS | {".gif"}
 
 
 class MediaResolveOptions(TypedDict, total=False):

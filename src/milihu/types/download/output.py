@@ -13,10 +13,8 @@ from pydantic import (
     model_validator,
 )
 
-NonEmptyStr = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1),
-]
+from milihu.types.common import NonEmptyStr
+
 Resolution = Annotated[
     str,
     StringConstraints(

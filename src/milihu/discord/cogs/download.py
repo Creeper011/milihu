@@ -3,7 +3,6 @@
 from datetime import timedelta
 from mimetypes import guess_file_type
 
-from aiohttp import ClientError
 from discord import File, app_commands, utils
 from discord.ext import commands
 from discord.ui import Container, LayoutView, MediaGallery, Separator, TextDisplay
@@ -11,7 +10,8 @@ from discord.ui import File as FileComponent
 from pydantic import ValidationError
 
 from milihu.discord.cogs._base import BaseCog
-from milihu.services.downloader_service import DownloaderService
+from milihu.exceptions.download import DownloadError
+from milihu.faces.download import MediaDownloader
 from milihu.types.default.payload import BYTES_PER_MIB
 from milihu.types.default.upload import DEFAULT_UPLOAD_LIFETIME
 from milihu.types.download.format import DownloadFormat
@@ -23,7 +23,7 @@ from milihu.types.registry import BotClient
 
 
 class DownloadCog(BaseCog):
-    def __init__(self, bot: BotClient, downloader: DownloaderService) -> None:
+    def __init__(self, bot: BotClient, downloader: MediaDownloader) -> None:
         super().__init__(bot)
         self.downloader = downloader
 
@@ -42,7 +42,7 @@ class DownloadCog(BaseCog):
                 output.resolution,
                 output.codec,
                 size,
-                f" in {output.elapsed_seconds:.2f} s",
+                f"Downloaded in {output.elapsed_seconds:.2f} s",
             )
             if part
         ]
@@ -135,7 +135,7 @@ class DownloadCog(BaseCog):
                 output = await self.downloader.download(
                     request, max_bytes=self.get_upload_limit(ctx)
                 )
-            except (RuntimeError, ClientError, TimeoutError) as exc:
+            except (DownloadError, RuntimeError, TimeoutError) as exc:
                 await ctx.reply(str(exc), ephemeral=True)
                 return
 

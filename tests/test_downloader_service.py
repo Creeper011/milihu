@@ -1,18 +1,19 @@
 import unittest
 from collections.abc import AsyncIterator
-from typing import Self, Unpack, override
+from contextlib import asynccontextmanager
+from typing import Unpack
 from unittest.mock import patch
 
 from pydantic import BaseModel
 
 from milihu.exceptions.payload import PayloadTooLargeError
-from milihu.services.core.litterbox import Litterbox
-from milihu.services.downloader_service import DownloaderService
 from milihu.types.download.format import DownloadFormat
 from milihu.types.download.quality import DownloadQuality
 from milihu.types.download.request import DownloadRequest
 from milihu.types.media import MediaResolveOptions, MediaResult
 from milihu.types.upload import UploadLifetime
+from milihu.usecases.downloader_service import DownloaderService
+from milihu.usecases.faces.http import ByteStream, HttpSession
 
 
 class Backend:
@@ -52,13 +53,11 @@ class MultiQualityBackend:
         }
 
 
-class FakeUploader(Litterbox):
-    def __init__(self, url: str) -> None:
-        super().__init__()
+class FakeUploader:
+    def __init__(self, url: str = "https://litter.catbox.moe/default.mp4") -> None:
         self.url = url
         self.uploads: list[tuple[bytes, str]] = []
 
-    @override
     async def upload(
         self,
         data: bytes,
@@ -70,74 +69,88 @@ class FakeUploader(Litterbox):
         return self.url
 
 
-class Response:
+class FakeStream:
     status = 200
     content_length: int | None = None
 
     def __init__(self, chunks: tuple[bytes, ...] = (b"1234", b"5678")) -> None:
         self.chunks = chunks
 
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-    def raise_for_status(self) -> None:
-        pass
-
-    @property
-    def content(self) -> Self:
-        return self
-
-    async def iter_chunked(self, size: int) -> AsyncIterator[bytes]:
+    async def iter_chunks(self, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         for chunk in self.chunks:
             yield chunk
 
 
-class Session:
-    def __init__(self, response: Response | None = None) -> None:
-        self.response = response or Response()
+class FakeSession:
+    def __init__(
+        self,
+        stream: FakeStream | None = None,
+        *,
+        expected_url: str | None = "https://cdn.example/video",
+    ) -> None:
+        self.stream = stream or FakeStream()
+        self.expected_url = expected_url
+        self.requested_urls: list[str] = []
 
-    async def __aenter__(self) -> Self:
-        return self
+    @asynccontextmanager
+    async def get(self, url: str) -> AsyncIterator[ByteStream]:
+        if self.expected_url is not None:
+            assert url == self.expected_url
+        self.requested_urls.append(url)
+        yield self.stream
 
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
-    def get(self, url: str) -> Response:
-        assert url == "https://cdn.example/video"
-        return self.response
+class FakeFetcher:
+    def __init__(self, session: FakeSession | None = None) -> None:
+        self.session = session or FakeSession()
+        self.opened = 0
+
+    @asynccontextmanager
+    async def open_session(self) -> AsyncIterator[HttpSession]:
+        self.opened += 1
+        yield self.session
+
+
+class MultiQualityFetcher:
+    def __init__(self, sizes: dict[str, int], *, split: bool = True) -> None:
+        self.sizes = sizes
+        self.split = split
+
+    @asynccontextmanager
+    async def open_session(self) -> AsyncIterator[HttpSession]:
+        sizes = self.sizes
+        split = self.split
+
+        class _Session:
+            @asynccontextmanager
+            async def get(self, url: str) -> AsyncIterator[ByteStream]:
+                q = url.rsplit("_", 1)[-1]
+                size = sizes[q]
+                chunks = (b"x" * 4, b"x" * (size - 4)) if split else (b"x" * size,)
+                yield FakeStream(chunks)
+
+        yield _Session()
 
 
 class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_rejects_empty_tunnel_without_retry(self) -> None:
         backend = Backend()
-        with patch(
-            "milihu.services.downloader_service.ClientSession",
-            return_value=Session(Response(())),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "empty"):
-                await DownloaderService(backend).download(
-                    "https://example.com/post", max_bytes=8
-                )
+        fetcher = FakeFetcher(FakeSession(FakeStream(())))
+        with self.assertRaisesRegex(RuntimeError, "empty"):
+            await DownloaderService(
+                backend, uploader=FakeUploader(), fetcher=fetcher
+            ).download("https://example.com/post", max_bytes=8)
         self.assertEqual(backend.calls, 1)
 
     async def test_downloads_resolved_file(self) -> None:
         backend = Backend("youtube_abc_1280x720_h264.mp4")
-        with (
-            patch(
-                "milihu.services.downloader_service.ClientSession",
-                return_value=Session(),
-            ),
-            patch(
-                "milihu.services.downloader_service.perf_counter",
-                side_effect=(10.0, 11.25),
-            ),
+        with patch(
+            "milihu.usecases.downloader_service.perf_counter",
+            side_effect=(10.0, 11.25),
         ):
-            output = await DownloaderService(backend).download(
-                "https://example.com/post", max_bytes=8
-            )
+            output = await DownloaderService(
+                backend, uploader=FakeUploader(), fetcher=FakeFetcher()
+            ).download("https://example.com/post", max_bytes=8)
         self.assertIsInstance(output, BaseModel)
         self.assertEqual(backend.options, {"video_quality": DownloadQuality.Q1440})
         self.assertEqual(output.filename, "youtube_abc_1280x720_h264.mp4")
@@ -152,10 +165,9 @@ class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
             {"url": "https://example.com/post", "format": "ogg", "quality": "1080"}
         )
         backend = Backend("audio.OGG")
-        with patch(
-            "milihu.services.downloader_service.ClientSession", return_value=Session()
-        ):
-            output = await DownloaderService(backend).download(request, max_bytes=8)
+        output = await DownloaderService(
+            backend, uploader=FakeUploader(), fetcher=FakeFetcher()
+        ).download(request, max_bytes=8)
 
         self.assertIs(backend.options.get("format"), DownloadFormat.OGG)
         self.assertIs(backend.options.get("video_quality"), DownloadQuality.Q1080)
@@ -165,37 +177,36 @@ class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
         request = DownloadRequest.model_validate(
             {"url": "https://example.com/post", "format": "mkv"}
         )
-        with patch("milihu.services.downloader_service.ClientSession") as session:
-            with self.assertRaisesRegex(RuntimeError, "does not offer the MKV format"):
-                await DownloaderService(Backend()).download(request, max_bytes=8)
+        fetcher = FakeFetcher()
+        with self.assertRaisesRegex(RuntimeError, "does not offer the MKV format"):
+            await DownloaderService(
+                Backend(), uploader=FakeUploader(), fetcher=fetcher
+            ).download(request, max_bytes=8)
 
-        session.assert_not_called()
+        self.assertEqual(fetcher.opened, 0)
 
     async def test_uploads_large_file_with_temporary_uploader_by_default(self) -> None:
         uploader = FakeUploader("https://litter.catbox.moe/abc123.mp4")
-        with patch(
-            "milihu.services.downloader_service.ClientSession", return_value=Session()
-        ):
-            output = await DownloaderService(Backend(), uploader=uploader).download(
-                "https://example.com/post", max_bytes=7
-            )
+        output = await DownloaderService(
+            Backend(), uploader=uploader, fetcher=FakeFetcher()
+        ).download("https://example.com/post", max_bytes=7)
 
         self.assertEqual(uploader.uploads, [(b"12345678", "video.mp4")])
         self.assertEqual(output.url, "https://litter.catbox.moe/abc123.mp4")
         self.assertEqual(output.size_bytes, 8)
 
     async def test_stops_when_response_exceeds_temporary_upload_limit(self) -> None:
-        with patch(
-            "milihu.services.downloader_service.ClientSession", return_value=Session()
-        ):
-            with self.assertRaises(PayloadTooLargeError):
-                await DownloaderService(
-                    Backend(), max_upload_bytes=7
-                ).download("https://example.com/post", max_bytes=4)
+        with self.assertRaises(PayloadTooLargeError):
+            await DownloaderService(
+                Backend(),
+                uploader=FakeUploader(),
+                fetcher=FakeFetcher(),
+                max_upload_bytes=7,
+            ).download("https://example.com/post", max_bytes=4)
 
     async def test_steps_down_video_quality_to_fit_max_bytes(self) -> None:
-        class MultiQualitySession:
-            sizes = {
+        fetcher = MultiQualityFetcher(
+            {
                 "1440": 16,
                 "1080": 14,
                 "720": 12,
@@ -204,27 +215,12 @@ class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
                 "240": 6,
                 "144": 4,
             }
-
-            async def __aenter__(self) -> Self:
-                return self
-
-            async def __aexit__(self, *_: object) -> None:
-                pass
-
-            def get(self, url: str) -> Response:
-                q = url.rsplit("_", 1)[-1]
-                size = self.sizes[q]
-                return Response((b"x" * 4, b"x" * (size - 4)))
-
+        )
         backend = MultiQualityBackend()
         uploader = FakeUploader("https://litter.catbox.moe/unused.mp4")
-        with patch(
-            "milihu.services.downloader_service.ClientSession",
-            return_value=MultiQualitySession(),
-        ):
-            output = await DownloaderService(backend, uploader=uploader).download(
-                "https://example.com/post", max_bytes=8
-            )
+        output = await DownloaderService(
+            backend, uploader=uploader, fetcher=fetcher
+        ).download("https://example.com/post", max_bytes=8)
 
         self.assertEqual(output.filename, "video_360.mp4")
         self.assertEqual(output.size_bytes, 8)
@@ -234,8 +230,8 @@ class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_falls_back_to_uploader_when_lowest_quality_exceeds_max_bytes(
         self,
     ) -> None:
-        class MultiQualitySession:
-            sizes = {
+        fetcher = MultiQualityFetcher(
+            {
                 "1440": 16,
                 "1080": 14,
                 "720": 12,
@@ -243,27 +239,13 @@ class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
                 "360": 9,
                 "240": 8,
                 "144": 6,
-            }
-
-            async def __aenter__(self) -> Self:
-                return self
-
-            async def __aexit__(self, *_: object) -> None:
-                pass
-
-            def get(self, url: str) -> Response:
-                q = url.rsplit("_", 1)[-1]
-                size = self.sizes[q]
-                return Response((b"x" * size,))
-
+            },
+            split=False,
+        )
         uploader = FakeUploader("https://litter.catbox.moe/fallback.mp4")
-        with patch(
-            "milihu.services.downloader_service.ClientSession",
-            return_value=MultiQualitySession(),
-        ):
-            output = await DownloaderService(
-                MultiQualityBackend(), uploader=uploader
-            ).download("https://example.com/post", max_bytes=5)
+        output = await DownloaderService(
+            MultiQualityBackend(), uploader=uploader, fetcher=fetcher
+        ).download("https://example.com/post", max_bytes=5)
 
         self.assertEqual(output.url, "https://litter.catbox.moe/fallback.mp4")
         self.assertEqual(len(uploader.uploads), 1)
@@ -276,12 +258,9 @@ class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
         request = DownloadRequest.model_validate(
             {"url": "https://example.com/post", "format": "mp3"}
         )
-        with patch(
-            "milihu.services.downloader_service.ClientSession", return_value=Session()
-        ):
-            output = await DownloaderService(backend, uploader=uploader).download(
-                request, max_bytes=7
-            )
+        output = await DownloaderService(
+            backend, uploader=uploader, fetcher=FakeFetcher()
+        ).download(request, max_bytes=7)
 
         self.assertEqual(backend.calls, 1)
         self.assertEqual(output.url, "https://litter.catbox.moe/audio.mp3")
@@ -294,18 +273,12 @@ class DownloaderServiceTests(unittest.IsolatedAsyncioTestCase):
         request = DownloadRequest.model_validate(
             {"url": "https://example.com/post", "quality": "1080"}
         )
-        with patch(
-            "milihu.services.downloader_service.ClientSession",
-            return_value=Session(Response((b"1234", b"5678"))),
-        ):
-            with patch.object(
-                Session,
-                "get",
-                return_value=Response((b"1234", b"5678")),
-            ):
-                output = await DownloaderService(backend, uploader=uploader).download(
-                    request, max_bytes=5
-                )
+        fetcher = FakeFetcher(
+            FakeSession(FakeStream((b"1234", b"5678")), expected_url=None)
+        )
+        output = await DownloaderService(
+            backend, uploader=uploader, fetcher=fetcher
+        ).download(request, max_bytes=5)
 
         self.assertEqual(backend.qualities, [DownloadQuality.Q1080])
         self.assertEqual(output.filename, "video_1080.mp4")

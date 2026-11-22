@@ -2,10 +2,11 @@
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, override
+from typing import Any, cast, override
 
-from discord import Intents
+from discord import Intents, app_commands
 from discord.ext import commands
+from discord.gateway import DiscordWebSocket
 from discord.utils import MISSING
 from pydantic import validate_call
 
@@ -13,6 +14,32 @@ from milihu.discord.cogfinder import CogFinder
 from milihu.types.cogpath import CogPath
 from milihu.types.default.prefix import Prefix
 from milihu.types.token import Token
+
+_MOBILE_BROWSER = "Discord iOS"
+_mobile_presence_patched = False
+
+
+def _enable_mobile_presence() -> None:
+    """Patch ``DiscordWebSocket.send_as_json`` so IDENTIFY reports a mobile client."""
+    # shortcut: patches IDENTIFY browser for mobile icon; drop if discord.py exposes it
+    global _mobile_presence_patched
+    if _mobile_presence_patched:
+        return
+
+    original_send_as_json = DiscordWebSocket.send_as_json
+
+    async def send_as_json_mobile(self: DiscordWebSocket, data: Any) -> None:
+        if isinstance(data, dict):
+            packet = cast(dict[str, Any], data)
+            payload = packet.get("d")
+            if packet.get("op") == self.IDENTIFY and isinstance(payload, dict):
+                properties = cast(dict[str, Any], payload).get("properties")
+                if isinstance(properties, dict):
+                    cast(dict[str, Any], properties)["browser"] = _MOBILE_BROWSER
+        await original_send_as_json(self, data)
+
+    DiscordWebSocket.send_as_json = send_as_json_mobile  # type: ignore[method-assign]
+    _mobile_presence_patched = True
 
 
 class MilihuBaseBot(commands.AutoShardedBot):
@@ -29,6 +56,19 @@ class MilihuBaseBot(commands.AutoShardedBot):
         if command_prefix is None:
             raise ValueError("command prefix is required")
 
+        _enable_mobile_presence()
+        options.setdefault(
+            "allowed_installs",
+            app_commands.AppInstallationType(guild=True, user=True),
+        )
+        options.setdefault(
+            "allowed_contexts",
+            app_commands.AppCommandContext(
+                guild=True,
+                dm_channel=True,
+                private_channel=True,
+            ),
+        )
         super().__init__(
             command_prefix=command_prefix,
             intents=intents or Intents.default(),

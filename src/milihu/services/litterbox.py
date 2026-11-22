@@ -1,7 +1,8 @@
 """Litterbox HTTP adapter for temporary file uploads."""
 
-from aiohttp import ClientSession, ClientTimeout, FormData
+from aiohttp import ClientError, ClientSession, ClientTimeout, FormData
 
+from milihu.exceptions.download import DownloadError
 from milihu.types.default.upload import DEFAULT_UPLOAD_LIFETIME
 from milihu.types.upload import UploadLifetime
 
@@ -38,10 +39,13 @@ class Litterbox:
             filename=filename,
             content_type="application/octet-stream",
         )
-        async with ClientSession(timeout=ClientTimeout(total=300)) as session:
-            async with session.post(self.api_url, data=form) as response:
-                response.raise_for_status()
-                url = (await response.text()).strip()
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=300)) as session:
+                async with session.post(self.api_url, data=form) as response:
+                    response.raise_for_status()
+                    url = (await response.text()).strip()
+        except (ClientError, TimeoutError) as exc:
+            raise DownloadError(f"Temporary upload failed: {exc}") from exc
         if not url.startswith(("http://", "https://")):
-            raise RuntimeError(f"Temporary upload failed: {url or 'empty response'}")
+            raise DownloadError(f"Temporary upload failed: {url or 'empty response'}")
         return url

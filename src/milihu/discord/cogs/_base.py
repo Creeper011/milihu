@@ -1,10 +1,11 @@
 """Shared base cog for attachment handling, size-safe replies, and payload errors."""
 
 import io
+import re
 from collections.abc import Callable
 from typing import Any, override
 
-from discord import Attachment, File, HTTPException, Message, app_commands
+from discord import Attachment, Embed, File, HTTPException, Message, app_commands
 from discord.ext import commands
 from discord.ui import LayoutView
 
@@ -15,6 +16,9 @@ from milihu.types.default.payload import (
     DEFAULT_PAYLOAD_OVERHEAD_BYTES,
 )
 from milihu.types.registry import BotClient
+
+_URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+_URL_TRAILING_PUNCT = ".,!?;:)'\""
 
 
 class BaseCog(commands.Cog):
@@ -29,6 +33,40 @@ class BaseCog(commands.Cog):
         self.formatter = formatter or CogMessageFormatter()
 
     @staticmethod
+    def _resolved_reference(message: Message) -> Message | None:
+        ref = message.reference
+        if ref is None:
+            return None
+        if isinstance(ref.resolved, Message):
+            return ref.resolved
+        if isinstance(ref.cached_message, Message):
+            return ref.cached_message
+        return None
+
+    @staticmethod
+    def _extract_embed_media_url(embeds: list[Embed]) -> str | None:
+        for embed in embeds:
+            for candidate in (
+                embed.video.url,
+                embed.video.proxy_url,
+                embed.image.url,
+                embed.image.proxy_url,
+                embed.thumbnail.url,
+                embed.thumbnail.proxy_url,
+                embed.url,
+            ):
+                if candidate:
+                    return candidate
+        return None
+
+    @staticmethod
+    def _extract_content_url(content: str) -> str | None:
+        match = _URL_RE.search(content)
+        if match is None:
+            return None
+        return match.group(0).rstrip(_URL_TRAILING_PUNCT) or None
+
+    @staticmethod
     def extract_attachment(
         ctx: commands.Context[BotClient],
         *,
@@ -37,14 +75,55 @@ class BaseCog(commands.Cog):
         """Return attachment ``index`` from the command or replied-to message."""
         if len(ctx.message.attachments) > index:
             return ctx.message.attachments[index]
-        ref = ctx.message.reference
-        if (
-            ref
-            and isinstance(ref.resolved, Message)
-            and len(ref.resolved.attachments) > index
-        ):
-            return ref.resolved.attachments[index]
+        replied = BaseCog._resolved_reference(ctx.message)
+        if replied is not None and len(replied.attachments) > index:
+            return replied.attachments[index]
         return None
+
+    @classmethod
+    def extract_media_from_message(
+        cls,
+        message: Message,
+        *,
+        index: int = 0,
+        include_content_url: bool = True,
+    ) -> Attachment | str | None:
+        """Extract an attachment, embed media URL, or link URL from ``message``."""
+        if len(message.attachments) > index:
+            return message.attachments[index]
+        embed_url = cls._extract_embed_media_url(message.embeds)
+        if embed_url is not None:
+            return embed_url
+        if include_content_url:
+            return cls._extract_content_url(message.content)
+        return None
+
+    @classmethod
+    def extract_media(
+        cls,
+        ctx: commands.Context[BotClient],
+        *,
+        index: int = 0,
+    ) -> Attachment | str | None:
+        """Extract media (attachment, embed, or link) from command or reply."""
+        attachment = cls.extract_attachment(ctx, index=index)
+        if attachment is not None:
+            return attachment
+
+        replied = cls._resolved_reference(ctx.message)
+        for msg in (ctx.message, replied):
+            if msg is None:
+                continue
+            embed_url = cls._extract_embed_media_url(msg.embeds)
+            if embed_url is not None:
+                return embed_url
+
+        if replied is not None:
+            replied_url = cls._extract_content_url(replied.content)
+            if replied_url is not None:
+                return replied_url
+
+        return cls._extract_content_url(ctx.message.content)
 
     @staticmethod
     def get_upload_limit(
@@ -105,13 +184,8 @@ class BaseCog(commands.Cog):
             await message.delete()
         return sent
 
-    @override
-    async def cog_command_error(
-        self,
-        ctx: commands.Context[BotClient],
-        error: Exception,
-    ) -> None:
-        """Handle payload-too-large errors uniformly across all commands in the cog."""
+    @staticmethod
+    def _unwrap_command_error(error: Exception) -> Exception:
         original = error
         while isinstance(
             original,
@@ -122,6 +196,16 @@ class BaseCog(commands.Cog):
             ),
         ):
             original = original.original
+        return original
+
+    @override
+    async def cog_command_error(
+        self,
+        ctx: commands.Context[BotClient],
+        error: Exception,
+    ) -> None:
+        """Handle payload-too-large errors uniformly across all commands in the cog."""
+        original = self._unwrap_command_error(error)
         if isinstance(original, PayloadTooLargeError):
             await ctx.reply(
                 view=self.formatter.error_view("File Too Large", str(original))
