@@ -1,0 +1,7 @@
+{
+  "name": "cobalt-youtube-client",
+  "private": true,
+  "dependencies": {
+    "youtubei.js": "18.1.0"
+  }
+}
