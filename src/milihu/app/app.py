@@ -12,6 +12,7 @@ from milihu.discord.loader import CogLoader
 from milihu.types.default.cogs import DEFAULT_COGS_DIR, DEFAULT_COGS_PACKAGE
 from milihu.types.default.prefix import DEFAULT_PREFIX, Prefix
 from milihu.types.token import Token
+from milihu.usecases.faces.audio import AudioBackend
 from milihu.usecases.faces.media import MediaBackend
 
 
@@ -24,10 +25,12 @@ class MilihuApp:
         prefix: Prefix = DEFAULT_PREFIX,
         *,
         media_backend: AbstractAsyncContextManager[MediaBackend] | None = None,
+        audio_backend: AbstractAsyncContextManager[AudioBackend] | None = None,
     ) -> None:
         self.token = token
         self.prefix = prefix
         self.media_backend = media_backend
+        self.audio_backend = audio_backend
         self.logger = self._configure_logging()
         self.bot = self._build_bot()
 
@@ -46,9 +49,17 @@ class MilihuApp:
             activity=CustomActivity(name="🌙 yeaa, idk what i'm doing"),
         )
 
-    async def _load_cogs(self, media_backend: MediaBackend | None) -> None:
+    async def _load_cogs(
+        self,
+        media_backend: MediaBackend | None,
+        audio_backend: AudioBackend | None = None,
+    ) -> None:
         finder = CogFinder(DEFAULT_COGS_DIR, package=DEFAULT_COGS_PACKAGE)
-        loader = CogLoader(self.bot, finder, build_cog_registry(media_backend))
+        loader = CogLoader(
+            self.bot,
+            finder,
+            build_cog_registry(media_backend, audio_backend),
+        )
         await self.bot.load_cogs(finder, loader.load)
 
     async def start(self) -> None:
@@ -86,8 +97,17 @@ class MilihuApp:
                     except Exception as exc:
                         self.logger.error("Media backend unavailable: %s", exc)
                         raise
+                audio_backend = None
+                if self.audio_backend is not None:
+                    try:
+                        audio_backend = await stack.enter_async_context(
+                            self.audio_backend
+                        )
+                    except Exception as exc:
+                        self.logger.error("Audio backend unavailable: %s", exc)
+                        raise
                 await stack.enter_async_context(self.bot)
-                await self._load_cogs(media_backend)
+                await self._load_cogs(media_backend, audio_backend)
                 self.logger.info("Starting Discord bot")
                 await self.bot.start(self.token)
         except asyncio.CancelledError:

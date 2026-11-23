@@ -21,6 +21,7 @@ from milihu.types.default.voice import (
     DEFAULT_FFMPEG_BEFORE_OPTIONS,
     DEFAULT_PLAYBACK_OPTIONS,
 )
+from milihu.types.playlist import StreamHeaders
 from milihu.types.voice import PlaybackOptions, SeekOffset
 
 
@@ -333,15 +334,16 @@ class DiscordVoiceManagerTests(unittest.IsolatedAsyncioTestCase):
         bot.guilds = {1: guild}
 
         sources: list[FakeAudioSource] = []
-        factory_calls: list[tuple[str, PlaybackOptions, float]] = []
+        factory_calls: list[tuple[str, PlaybackOptions, float, StreamHeaders]] = []
 
         def _make_source(
             url: str,
             *,
             playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
             seek_seconds: SeekOffset = 0.0,
+            headers: StreamHeaders = (),
         ) -> AudioSource:
-            factory_calls.append((url, playback, seek_seconds))
+            factory_calls.append((url, playback, seek_seconds, headers))
             src = FakeAudioSource()
             sources.append(src)
             return src
@@ -363,12 +365,20 @@ class DiscordVoiceManagerTests(unittest.IsolatedAsyncioTestCase):
             after=on_after,
             playback=custom_playback,
             seek_seconds=12.5,
+            headers=(("Authorization", "token"),),
         )
         assert guild.voice_client is not None
         self.assertEqual(guild.voice_client.played_sources, [sources[0]])
         self.assertEqual(
             factory_calls,
-            [("https://cdn.example/audio.opus", custom_playback, 12.5)],
+            [
+                (
+                    "https://cdn.example/audio.opus",
+                    custom_playback,
+                    12.5,
+                    (("Authorization", "token"),),
+                )
+            ],
         )
         self.assertTrue(manager.is_playing(1))
 

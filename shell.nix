@@ -53,6 +53,7 @@ pkgs.mkShell {
     UV_PYTHON = "${pythonEnv}/bin/python";
     UV_PYTHON_PREFERENCE = "only-system";
     COBALT_IMAGE = "ghcr.io/imputnet/cobalt@sha256:28540f81d2cffbd9d089c08438e39a7689a7cee7e9a5b0f60de93a22d19f5dbe";
+    NODELINK_IMAGE = "ghcr.io/performanc/nodelink@sha256:2335a9daf22a71503386956ff6b9850ca331e95d21a8fba803d23b8dcddbfc23";
   };
 
   shellHook = ''

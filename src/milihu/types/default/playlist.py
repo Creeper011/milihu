@@ -1,9 +1,6 @@
-"""Default settings and constants for playlist resolution."""
+"""Default settings and constants for audio and playlist resolution."""
 
-from pydantic import PositiveFloat, PositiveInt
+from pydantic import PositiveInt
 
 DEFAULT_MAX_PLAYLIST_TRACKS: PositiveInt = 100
-DEFAULT_PLAYLIST_TIMEOUT_SECONDS: PositiveFloat = 10.0
-PLAYLIST_FALLBACK_WARNING = (
-    "Could not load the playlist; playing the single track instead."
-)
+DEFAULT_MAX_SEARCH_RESULTS: PositiveInt = 5

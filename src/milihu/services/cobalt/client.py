@@ -1,6 +1,6 @@
 """Cobalt HTTP adapter for media resolution."""
 
-from typing import Self, Unpack
+from typing import Any, Self, Unpack
 
 from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeout
 
@@ -71,8 +71,13 @@ class Cobalt:
                 body["audioFormat"] = fmt
         try:
             async with self.session.post("/", json=body) as response:
-                response.raise_for_status()
-                data = await response.json()
+                try:
+                    data: dict[str, Any] = await response.json()
+                except (ClientError, ValueError):
+                    response.raise_for_status()
+                    raise
+                if data.get("status") != "error":
+                    response.raise_for_status()
         except ClientResponseError as exc:
             raise MediaBackendError(str(exc), status=exc.status) from exc
         except (ClientError, TimeoutError) as exc:

@@ -1,16 +1,19 @@
 import asyncio
 import unittest
-from typing import Unpack
+from typing import override
 from unittest.mock import patch
 
 from pydantic import HttpUrl, TypeAdapter
 
-from milihu.exceptions.media import MediaBackendError
-from milihu.exceptions.voice import VoiceError
-from milihu.types.default.playlist import PLAYLIST_FALLBACK_WARNING
+from milihu.exceptions.voice import BackendUnavailableError, VoiceError
 from milihu.types.default.voice import DEFAULT_PLAYBACK_OPTIONS
-from milihu.types.media import MediaResolveOptions, MediaResult
-from milihu.types.playlist import PlaylistEntry, ResolvedPlaylist
+from milihu.types.playlist import (
+    AudioLoadResult,
+    AudioTrackItem,
+    ResolvedPlaylist,
+    ResolvedStream,
+    StreamHeaders,
+)
 from milihu.types.voice import (
     ChannelEmptyCallback,
     ChannelMoveCallback,
@@ -28,6 +31,10 @@ from milihu.usecases.music_service import MusicPlayerService
 _URL_ADAPTER: TypeAdapter[HttpUrl] = TypeAdapter(HttpUrl)
 
 
+def _url(raw: str) -> HttpUrl:
+    return _URL_ADAPTER.validate_python(raw)
+
+
 class FakeVoiceManager:
     def __init__(self) -> None:
         self.channels: dict[int, int] = {}
@@ -35,7 +42,9 @@ class FakeVoiceManager:
         self.playing: dict[int, bool] = {}
         self.paused: dict[int, bool] = {}
         self.played_urls: list[tuple[int, str]] = []
-        self.play_calls: list[tuple[int, str, PlaybackOptions, float]] = []
+        self.play_calls: list[
+            tuple[int, str, PlaybackOptions, float, StreamHeaders]
+        ] = []
         self.after_callbacks: dict[int, TrackEndCallback] = {}
         self.on_disconnect: DisconnectCallback | None = None
         self.on_channel_move: ChannelMoveCallback | None = None
@@ -80,11 +89,12 @@ class FakeVoiceManager:
         after: TrackEndCallback,
         playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
         seek_seconds: SeekOffset = 0.0,
+        headers: StreamHeaders = (),
     ) -> None:
         if self.raise_on_play is not None:
             raise self.raise_on_play
         self.played_urls.append((guild_id, stream_url))
-        self.play_calls.append((guild_id, stream_url, playback, seek_seconds))
+        self.play_calls.append((guild_id, stream_url, playback, seek_seconds, headers))
         self.playing[guild_id] = True
         self.paused[guild_id] = False
         self.after_callbacks[guild_id] = after
@@ -181,77 +191,106 @@ class FakeStreamProbe:
         self.closed = True
 
 
-class FakeMediaBackend:
+class FakeAudioBackend:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, MediaResolveOptions]] = []
+        self.load_calls: list[str] = []
+        self.search_queries: list[str] = []
+        self.stream_calls: list[str] = []
+        self.playlists: dict[str, ResolvedPlaylist | Exception] = {}
+        self.search_results: dict[str, tuple[AudioTrackItem, ...] | Exception] = {}
         self.counter = 0
 
-    async def resolve(
-        self, url: str, **options: Unpack[MediaResolveOptions]
-    ) -> MediaResult:
-        self.calls.append((url, options))
+    async def load(self, url: HttpUrl) -> AudioLoadResult:
+        raw = str(url)
+        self.load_calls.append(raw)
+        if raw in self.playlists:
+            outcome = self.playlists[raw]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return AudioLoadResult(kind="playlist", playlist=outcome)
+        slug = raw.rstrip("/").rsplit("/", 1)[-1]
+        return AudioLoadResult(
+            kind="track",
+            track=AudioTrackItem(
+                source_url=url,
+                title=slug,
+                encoded=f"enc:{slug}",
+            ),
+        )
+
+    async def search(self, query: str) -> tuple[AudioTrackItem, ...]:
+        self.search_queries.append(query)
+        if query in self.search_results:
+            outcome = self.search_results[query]
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+        return (
+            AudioTrackItem(
+                source_url=_url("https://www.youtube.com/watch?v=abc123"),
+                title="abc123",
+                encoded="enc:abc123",
+            ),
+        )
+
+    async def resolve_stream(self, item: AudioTrackItem) -> ResolvedStream:
+        self.stream_calls.append(item.encoded)
         self.counter += 1
-        slug = url.rstrip("/").rsplit("/", 1)[-1]
-        return {
-            "status": "file",
-            "url": f"https://stream.example/{slug}?n={self.counter}",
-            "filename": f"{slug}.opus",
-            "delivery": "proxy",
-        }
+        slug = item.encoded.removeprefix("enc:")
+        return ResolvedStream(
+            stream_url=f"http://127.0.0.1:2333/v4/loadstream?slug={slug}&n={self.counter}",
+            title=item.title,
+            is_live=item.is_live,
+            is_direct=False,
+            headers=(("Authorization", "nl-token"),),
+        )
 
 
 class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_query_resolves_before_enqueue_and_rejects_bad_input(self) -> None:
-        class FakeSearch:
-            def __init__(self) -> None:
-                self.queries: list[str] = []
-
-            async def search(self, query: str) -> tuple[HttpUrl, ...]:
-                self.queries.append(query)
-                if query == "missing song":
-                    raise VoiceError("No videos found for this search.")
-                return (
-                    _URL_ADAPTER.validate_python(
-                        "https://www.youtube.com/watch?v=abc123"
-                    ),
-                )
-
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
-        search = FakeSearch()
-        player = MusicPlayerService(
-            voice, backend, stream_probe=FakeStreamProbe(), search_resolver=search
+        backend = FakeAudioBackend()
+        backend.search_results["missing song"] = VoiceError(
+            "No videos found for this search."
         )
+        player = MusicPlayerService(voice, backend, stream_probe=FakeStreamProbe())
         with self.assertRaisesRegex(VoiceError, "voice channel"):
             await player.enqueue(1, None, "my favorite song", requested_by=1)
-        self.assertEqual(search.queries, [])
+        self.assertEqual(backend.search_queries, [])
         for value in ("  ", "https://", "missing song"):
             with self.assertRaises(VoiceError):
                 await player.enqueue(1, 100, value, requested_by=1)
         self.assertEqual(voice.channels, {})
-        self.assertEqual(backend.calls, [])
+        self.assertEqual(backend.stream_calls, [])
         result = await player.enqueue(1, 100, "  my favorite song  ", requested_by=1)
-        self.assertEqual(search.queries, ["missing song", "my favorite song"])
+        self.assertEqual(
+            backend.search_queries, ["missing song", "my favorite song"]
+        )
         self.assertEqual(
             str(result.track.source_url), "https://www.youtube.com/watch?v=abc123"
         )
-        self.assertEqual(backend.calls[0][0], "https://www.youtube.com/watch?v=abc123")
+        self.assertEqual(backend.stream_calls, ["enc:abc123"])
+        self.assertEqual(
+            voice.play_calls[0][4], (("Authorization", "nl-token"),)
+        )
         await player.enqueue(1, 100, "https://example.com/direct", requested_by=1)
-        self.assertEqual(search.queries, ["missing song", "my favorite song"])
+        self.assertEqual(
+            backend.search_queries, ["missing song", "my favorite song"]
+        )
         await player.aclose()
 
     async def test_auto_connect_and_clean_takeover_from_empty_channel(self) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         probe = FakeStreamProbe()
         player = MusicPlayerService(
             voice, backend, stream_probe=probe, idle_timeout=60
         )
 
-        # User not in voice channel is rejected without calling Cobalt.
+        # User not in voice channel is rejected without calling backend.
         with self.assertRaisesRegex(VoiceError, "voice channel"):
             await player.enqueue(1, None, "https://example.com/a", requested_by=10)
-        self.assertEqual(backend.calls, [])
+        self.assertEqual(backend.load_calls, [])
 
         # Auto-connects to user's voice channel on first play.
         started_events: list[tuple[int, int, Track]] = []
@@ -292,19 +331,25 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_queue_advance_re_resolves_and_handles_loop_modes(self) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         player = MusicPlayerService(
             voice, backend, stream_probe=FakeStreamProbe(), idle_timeout=60
         )
 
         await player.enqueue(1, 100, "https://example.com/s1", requested_by=10)
         await player.enqueue(1, 100, "https://example.com/s2", requested_by=10)
-        self.assertEqual(voice.played_urls, [(1, "https://stream.example/s1?n=1")])
+        self.assertEqual(
+            voice.played_urls,
+            [(1, "http://127.0.0.1:2333/v4/loadstream?slug=s1&n=1")],
+        )
 
-        # Loop TRACK repeats s1 with a freshly resolved Cobalt URL.
+        # Loop TRACK repeats s1 with a freshly resolved stream URL via cached token.
         await player.set_loop(1, 100, LoopMode.TRACK)
         await voice.finish_track(1)
-        self.assertEqual(voice.played_urls[-1], (1, "https://stream.example/s1?n=3"))
+        self.assertEqual(
+            voice.played_urls[-1],
+            (1, "http://127.0.0.1:2333/v4/loadstream?slug=s1&n=3"),
+        )
         snap_track = player.get_queue(1)
         assert snap_track.current is not None
         self.assertEqual(snap_track.current.title, "s1")
@@ -334,7 +379,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_queue_management_controls_and_guild_eviction(self) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         player = MusicPlayerService(
             voice, backend, stream_probe=FakeStreamProbe(), idle_timeout=60
         )
@@ -376,7 +421,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_idle_timeout_disconnects_and_cancels_on_new_enqueue(self) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         player = MusicPlayerService(
             voice, backend, stream_probe=FakeStreamProbe(), idle_timeout=0.05
         )
@@ -443,7 +488,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_consecutive_fast_failures_break_infinite_loop(self) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         player = MusicPlayerService(
             voice, backend, stream_probe=FakeStreamProbe(), idle_timeout=0.05
         )
@@ -482,7 +527,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         player = MusicPlayerService(
             voice, backend, stream_probe=FakeStreamProbe(), idle_timeout=0.05
         )
@@ -553,11 +598,17 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
         await player.aclose()
 
     async def test_radio_fallback_icy_pause_and_aclose(self) -> None:
-        class RejectingBackend:
-            async def resolve(
-                self, url: str, **options: Unpack[MediaResolveOptions]
-            ) -> MediaResult:
-                return {"status": "error", "code": "error.api.link.unsupported"}
+        class EmptyAudioBackend:
+            async def load(self, url: HttpUrl) -> AudioLoadResult:
+                if "page" in str(url):
+                    raise VoiceError("Could not resolve audio: unsupported link")
+                return AudioLoadResult(kind="empty")
+
+            async def search(self, query: str) -> tuple[AudioTrackItem, ...]:
+                return ()
+
+            async def resolve_stream(self, item: AudioTrackItem) -> ResolvedStream:
+                raise NotImplementedError
 
         voice = FakeVoiceManager()
         probe = FakeStreamProbe()
@@ -573,7 +624,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
         ]
         player = MusicPlayerService(
             voice,
-            RejectingBackend(),
+            EmptyAudioBackend(),
             stream_probe=probe,
             idle_timeout=60,
             icy_poll_interval=0.015,
@@ -584,6 +635,8 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.track.title, "Jpopsuki Radio")
         self.assertTrue(res.track.is_live)
         self.assertEqual(probe.validated_urls, [radio_url])
+        # Direct streams never attach NodeLink Authorization headers.
+        self.assertEqual(voice.play_calls[-1][4], ())
 
         # Wait for first ICY update, then pause and confirm ICY polling pauses.
         await asyncio.sleep(0.01)
@@ -600,8 +653,8 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
             [(1, 100, "Song 1"), (1, 100, "Song 2")],
         )
 
-        # Non-audio URL rejected by both Cobalt and probe raises Cobalt's error.
-        with self.assertRaisesRegex(VoiceError, "error.api.link.unsupported"):
+        # Non-audio URL rejected by both NodeLink and probe raises backend's error.
+        with self.assertRaisesRegex(VoiceError, "unsupported link"):
             await player.enqueue(1, 100, "https://example.com/page", requested_by=42)
 
         # aclose clears status, disconnects, and closes voice + stream_probe.
@@ -611,169 +664,118 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(voice.closed)
         self.assertTrue(probe.closed)
 
-    async def test_playlist_enqueue_lazy_resolution_and_fallback_policy(self) -> None:
-        class FakePlaylistResolver:
-            def __init__(self) -> None:
-                self.results: dict[str, ResolvedPlaylist | Exception | None] = {}
-
-            async def resolve(self, url: HttpUrl) -> ResolvedPlaylist | None:
-                outcome = self.results.get(str(url))
-                if isinstance(outcome, Exception):
-                    raise outcome
-                return outcome
-
-        playlist_url = "https://youtu.be/v1?list=RD123"
+    async def test_spotify_playlist_enqueue_and_lazy_resolution(self) -> None:
+        playlist_url = "https://open.spotify.com/playlist/40GRBpPK3knyYNfPFAlGlG"
         playlist_url2 = "https://www.youtube.com/playlist?list=PL456"
-        fallback_url = "https://www.youtube.com/watch?v=solo&list=WL"
 
-        resolver = FakePlaylistResolver()
-        resolver.results[playlist_url] = ResolvedPlaylist(
-            title="Mix - Indie",
+        backend = FakeAudioBackend()
+        backend.playlists[playlist_url] = ResolvedPlaylist(
+            title="sophia hipotética",
             entries=(
-                PlaylistEntry(
-                    source_url=_URL_ADAPTER.validate_python(
-                        "https://www.youtube.com/watch?v=v1"
+                AudioTrackItem(
+                    source_url=_url(
+                        "https://open.spotify.com/track/1UNEuG9DYOWiikf00ayr52"
                     ),
-                    title="Song One",
+                    title="Ravyn Lenae - Love Me Not",
+                    encoded="enc:sp1",
                 ),
-                PlaylistEntry(
-                    source_url=_URL_ADAPTER.validate_python(
-                        "https://www.youtube.com/watch?v=v2"
+                AudioTrackItem(
+                    source_url=_url(
+                        "https://open.spotify.com/track/3jfZ9M23l0L7RxzYMTgBTv"
                     ),
-                    title="Song Two",
+                    title="Joy Again - Looking Out for You",
+                    encoded="enc:sp2",
                 ),
             ),
         )
-        resolver.results[playlist_url2] = ResolvedPlaylist(
+        backend.playlists[playlist_url2] = ResolvedPlaylist(
             title="Second List",
             entries=(
-                PlaylistEntry(
-                    source_url=_URL_ADAPTER.validate_python(
-                        "https://www.youtube.com/watch?v=v3"
-                    ),
+                AudioTrackItem(
+                    source_url=_url("https://www.youtube.com/watch?v=v3"),
                     title="Song Three",
+                    encoded="enc:v3",
                 ),
-                PlaylistEntry(
-                    source_url=_URL_ADAPTER.validate_python(
-                        "https://www.youtube.com/watch?v=v4"
-                    ),
+                AudioTrackItem(
+                    source_url=_url("https://www.youtube.com/watch?v=v4"),
                     title="Song Four",
+                    encoded="enc:v4",
                 ),
             ),
-        )
-        resolver.results[fallback_url] = VoiceError(
-            "Could not load tracks from this playlist."
         )
 
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
         player = MusicPlayerService(
             voice,
             backend,
             stream_probe=FakeStreamProbe(),
-            playlist_resolver=resolver,
             idle_timeout=60,
         )
 
-        # Idle bot: starts track 1 immediately (1 Cobalt call) and queues rest lazily.
+        # Idle bot: starts track 1 immediately (1 stream call) and queues rest lazily.
         first = await player.enqueue(1, 100, playlist_url, requested_by=7)
         self.assertTrue(first.started_immediately)
         self.assertEqual(first.enqueued_count, 2)
-        self.assertEqual(first.playlist_title, "Mix - Indie")
-        self.assertEqual(first.track.title, "Song One")
-        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(first.playlist_title, "sophia hipotética")
+        self.assertEqual(first.track.title, "Ravyn Lenae - Love Me Not")
+        self.assertEqual(backend.stream_calls, ["enc:sp1"])
 
-        # Already playing: queues entire second playlist with 0 Cobalt calls.
+        # Already playing: queues entire second playlist with 0 stream resolutions.
         second = await player.enqueue(1, 100, playlist_url2, requested_by=8)
         self.assertFalse(second.started_immediately)
         self.assertEqual(second.position, 2)
         self.assertEqual(second.enqueued_count, 2)
-        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(backend.stream_calls, ["enc:sp1"])
         self.assertEqual(
             [t.title for t in player.get_queue(1).upcoming],
-            ["Song Two", "Song Three", "Song Four"],
+            ["Joy Again - Looking Out for You", "Song Three", "Song Four"],
         )
 
-        # Advancing resolves track 2 on demand.
+        # Advancing resolves track 2 on demand without calling load() again.
         await voice.finish_track(1)
-        self.assertEqual(len(backend.calls), 2)
+        self.assertEqual(backend.stream_calls, ["enc:sp1", "enc:sp2"])
         snap = player.get_queue(1)
         assert snap.current is not None
-        self.assertEqual(snap.current.title, "Song Two")
-
-        # Playlist failure falls back to single track with warning when Cobalt succeeds.
-        fb = await player.enqueue(1, 100, fallback_url, requested_by=9)
-        self.assertFalse(fb.started_immediately)
-        self.assertEqual(fb.enqueued_count, 1)
-        self.assertEqual(fb.warning, PLAYLIST_FALLBACK_WARNING)
-
-        # Playlist failure propagates original playlist error when Cobalt also fails.
-        class RejectingBackend:
-            async def resolve(
-                self, url: str, **options: Unpack[MediaResolveOptions]
-            ) -> MediaResult:
-                return {"status": "error", "code": "error.api.link.unsupported"}
-
-        player2 = MusicPlayerService(
-            FakeVoiceManager(),
-            RejectingBackend(),
-            stream_probe=FakeStreamProbe(),
-            playlist_resolver=resolver,
-            idle_timeout=60,
-        )
-        with self.assertRaisesRegex(
-            VoiceError, "Could not load tracks from this playlist"
-        ):
-            await player2.enqueue(2, 200, fallback_url, requested_by=9)
+        self.assertEqual(snap.current.title, "Joy Again - Looking Out for You")
 
         await player.aclose()
-        await player2.aclose()
 
     async def test_play_next_skips_many_dead_tracks_but_stops_on_backend_outage(
         self,
     ) -> None:
-        class SelectiveBackend:
+        class SelectiveAudioBackend(FakeAudioBackend):
             def __init__(self) -> None:
+                super().__init__()
                 self.mode = "dead_videos"
 
-            async def resolve(
-                self, url: str, **options: Unpack[MediaResolveOptions]
-            ) -> MediaResult:
-                if "ok" in url:
-                    return {
-                        "status": "file",
-                        "url": f"https://stream.example/{url.rsplit('/', 1)[-1]}",
-                        "filename": "ok.opus",
-                        "delivery": "proxy",
-                    }
+            @override
+            async def resolve_stream(self, item: AudioTrackItem) -> ResolvedStream:
+                if "ok" in item.encoded:
+                    return await super().resolve_stream(item)
                 if self.mode == "dead_videos":
-                    return {"status": "error", "code": "error.api.youtube.unavailable"}
-                if self.mode == "http_503":
-                    raise MediaBackendError("Service Unavailable", status=503)
-                raise MediaBackendError("connection refused")
-
-        class StaticPlaylistResolver:
-            def __init__(self, entries: tuple[PlaylistEntry, ...]) -> None:
-                self.entries = entries
-
-            async def resolve(self, url: HttpUrl) -> ResolvedPlaylist | None:
-                return ResolvedPlaylist(title="Big List", entries=self.entries)
+                    raise VoiceError("Could not resolve audio: video unavailable")
+                raise BackendUnavailableError(
+                    "Audio backend is temporarily unavailable."
+                )
 
         # 4 dead tracks in a row followed by 1 playable -> skips all 4, plays #5.
         entries_dead = tuple(
-            PlaylistEntry(
-                source_url=_URL_ADAPTER.validate_python(f"https://example.com/{name}"),
+            AudioTrackItem(
+                source_url=_url(f"https://example.com/{name}"),
                 title=name,
+                encoded=f"enc:{name}",
             )
             for name in ("ok0", "dead1", "dead2", "dead3", "dead4", "ok5")
         )
         voice = FakeVoiceManager()
-        backend = SelectiveBackend()
+        backend = SelectiveAudioBackend()
+        backend.playlists["https://youtu.be/ok0?list=PL1"] = ResolvedPlaylist(
+            title="Big List", entries=entries_dead
+        )
         player = MusicPlayerService(
             voice,
             backend,
             stream_probe=FakeStreamProbe(),
-            playlist_resolver=StaticPlaylistResolver(entries_dead),
             idle_timeout=60,
         )
 
@@ -786,19 +788,22 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
 
         # Backend outage stops after 3 failures and preserves the rest of the queue.
         entries_outage = tuple(
-            PlaylistEntry(
-                source_url=_URL_ADAPTER.validate_python(f"https://example.com/{name}"),
+            AudioTrackItem(
+                source_url=_url(f"https://example.com/{name}"),
                 title=name,
+                encoded=f"enc:{name}",
             )
             for name in ("ok0", "f1", "f2", "f3", "kept1", "kept2")
         )
         voice2 = FakeVoiceManager()
-        backend2 = SelectiveBackend()
+        backend2 = SelectiveAudioBackend()
+        backend2.playlists["https://youtu.be/ok0?list=PL2"] = ResolvedPlaylist(
+            title="Big List", entries=entries_outage
+        )
         player2 = MusicPlayerService(
             voice2,
             backend2,
             stream_probe=FakeStreamProbe(),
-            playlist_resolver=StaticPlaylistResolver(entries_outage),
             idle_timeout=60,
         )
         await player2.enqueue(2, 200, "https://youtu.be/ok0?list=PL2", requested_by=1)
@@ -811,98 +816,74 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
         await player.aclose()
         await player2.aclose()
 
-    async def test_search_falls_back_to_next_candidate_when_cobalt_fails(self) -> None:
-        class MultiCandidateSearch:
-            def __init__(self, urls: list[str]) -> None:
-                self.urls = tuple(_URL_ADAPTER.validate_python(u) for u in urls)
-
-            async def search(self, query: str) -> tuple[HttpUrl, ...]:
-                return self.urls
-
-        class FailingFirstBackend:
+    async def test_search_falls_back_to_next_candidate_when_stream_fails(self) -> None:
+        class FailingFirstBackend(FakeAudioBackend):
             def __init__(self, *, outage: bool = False) -> None:
-                self.calls: list[str] = []
+                super().__init__()
                 self.outage = outage
 
-            async def resolve(
-                self, url: str, **options: Unpack[MediaResolveOptions]
-            ) -> MediaResult:
-                self.calls.append(url)
+            @override
+            async def resolve_stream(self, item: AudioTrackItem) -> ResolvedStream:
+                self.stream_calls.append(item.encoded)
                 if self.outage:
-                    raise MediaBackendError("service unavailable", status=503)
-                if "dead" in url:
-                    return {"status": "error", "code": "error.api.youtube.unavailable"}
-                slug = url.rsplit("=", 1)[-1]
-                return {
-                    "status": "file",
-                    "url": f"https://stream.example/{slug}",
-                    "filename": f"{slug}.opus",
-                    "delivery": "proxy",
-                }
+                    raise BackendUnavailableError("service unavailable")
+                if "dead" in item.encoded:
+                    raise VoiceError("Could not resolve audio: unavailable")
+                return ResolvedStream(
+                    stream_url=f"http://127.0.0.1:2333/v4/loadstream?e={item.encoded}",
+                    title=item.title,
+                    headers=(("Authorization", "nl-token"),),
+                )
+
+        def _candidates(*names: str) -> tuple[AudioTrackItem, ...]:
+            return tuple(
+                AudioTrackItem(
+                    source_url=_url(f"https://www.youtube.com/watch?v={name}"),
+                    title=name,
+                    encoded=f"enc:{name}",
+                )
+                for name in names
+            )
 
         # Candidate #1 is unplayable -> automatically falls back to candidate #2.
         voice = FakeVoiceManager()
         backend = FailingFirstBackend()
-        search = MultiCandidateSearch(
-            [
-                "https://www.youtube.com/watch?v=dead_01",
-                "https://www.youtube.com/watch?v=good_02",
-                "https://www.youtube.com/watch?v=good_03",
-            ]
+        backend.search_results["some song"] = _candidates(
+            "dead_01", "good_02", "good_03"
         )
-        player = MusicPlayerService(
-            voice, backend, stream_probe=FakeStreamProbe(), search_resolver=search
-        )
+        player = MusicPlayerService(voice, backend, stream_probe=FakeStreamProbe())
         result = await player.enqueue(1, 100, "some song", requested_by=7)
         self.assertEqual(
             str(result.track.source_url),
             "https://www.youtube.com/watch?v=good_02",
         )
         self.assertEqual(result.track.title, "good_02")
-        self.assertEqual(
-            backend.calls,
-            [
-                "https://www.youtube.com/watch?v=dead_01",
-                "https://www.youtube.com/watch?v=good_02",
-            ],
-        )
+        self.assertEqual(backend.stream_calls, ["enc:dead_01", "enc:good_02"])
 
-        # Consecutive backend outages abort after max_backend_failures (3) without
-        # trying remaining candidates or connecting to voice.
+        # Consecutive backend outages abort after max_backend_failures (3).
         voice_outage = FakeVoiceManager()
         outage_backend = FailingFirstBackend(outage=True)
-        outage_search = MultiCandidateSearch(
-            [f"https://www.youtube.com/watch?v=cand_{i}" for i in range(5)]
+        outage_backend.search_results["some song"] = _candidates(
+            *(f"cand_{i}" for i in range(5))
         )
         player_outage = MusicPlayerService(
-            voice_outage,
-            outage_backend,
-            stream_probe=FakeStreamProbe(),
-            search_resolver=outage_search,
+            voice_outage, outage_backend, stream_probe=FakeStreamProbe()
         )
         with self.assertRaisesRegex(VoiceError, "service unavailable"):
             await player_outage.enqueue(2, 200, "some song", requested_by=7)
-        self.assertEqual(len(outage_backend.calls), 3)
+        self.assertEqual(len(outage_backend.stream_calls), 3)
         self.assertEqual(voice_outage.channels, {})
 
         # All candidates unplayable -> raises last VoiceError without connecting.
         voice_dead = FakeVoiceManager()
         dead_backend = FailingFirstBackend()
-        dead_search = MultiCandidateSearch(
-            [
-                "https://www.youtube.com/watch?v=dead_01",
-                "https://www.youtube.com/watch?v=dead_02",
-            ]
-        )
+        dead_backend.search_results["all dead"] = _candidates("dead_01", "dead_02")
         player_dead = MusicPlayerService(
-            voice_dead,
-            dead_backend,
-            stream_probe=FakeStreamProbe(),
-            search_resolver=dead_search,
+            voice_dead, dead_backend, stream_probe=FakeStreamProbe()
         )
         with self.assertRaisesRegex(VoiceError, "unavailable"):
             await player_dead.enqueue(3, 300, "all dead", requested_by=7)
-        self.assertEqual(len(dead_backend.calls), 2)
+        self.assertEqual(len(dead_backend.stream_calls), 2)
         self.assertEqual(voice_dead.channels, {})
 
         await player.aclose()
@@ -911,7 +892,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_set_speed_applies_immediately_persists_and_resets(self) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         started_tracks: list[str] = []
 
         async def on_track_start(_guild_id: int, _ch: int, track: Track) -> None:
@@ -933,6 +914,9 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(voice.play_calls), 1)
             self.assertEqual(voice.play_calls[0][2], DEFAULT_PLAYBACK_OPTIONS)
             self.assertEqual(voice.play_calls[0][3], 0.0)
+            self.assertEqual(
+                voice.play_calls[0][4], (("Authorization", "nl-token"),)
+            )
             old_after = voice.after_callbacks[1]
 
             # Advance 10 seconds at 1.0x, then change speed to 1.5x.
@@ -940,10 +924,13 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
             updated = await player.set_speed(1, 10, speed=1.5)
             self.assertEqual(updated, PlaybackOptions(speed=1.5, preserve_pitch=True))
             self.assertEqual(len(voice.play_calls), 2)
-            # Re-resolved a fresh stream URL on restart.
+            # Re-resolved a fresh stream URL on restart with Authorization preserved.
             self.assertNotEqual(voice.play_calls[1][1], voice.play_calls[0][1])
             self.assertEqual(voice.play_calls[1][2], updated)
             self.assertAlmostEqual(voice.play_calls[1][3], 10.0)
+            self.assertEqual(
+                voice.play_calls[1][4], (("Authorization", "nl-token"),)
+            )
             # Restarting for speed does not re-announce Now Playing.
             self.assertEqual(len(started_tracks), 1)
 
@@ -971,7 +958,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
             now = 120.0
             await voice.finish_track(1)
             self.assertEqual(len(voice.play_calls), 4)
-            self.assertTrue(voice.play_calls[3][1].startswith("https://stream.example/2"))
+            self.assertIn("slug=2", voice.play_calls[3][1])
             self.assertEqual(voice.play_calls[3][2], updated2)
             self.assertEqual(voice.play_calls[3][3], 0.0)
 
@@ -985,7 +972,7 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         voice = FakeVoiceManager()
-        backend = FakeMediaBackend()
+        backend = FakeAudioBackend()
         player = MusicPlayerService(voice, backend, stream_probe=FakeStreamProbe())
 
         now = 50.0
@@ -1013,6 +1000,9 @@ class MusicPlayerServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(voice.play_calls), 2)
             self.assertEqual(voice.play_calls[1][2], updated)
             self.assertAlmostEqual(voice.play_calls[1][3], 12.5)
+            self.assertEqual(
+                voice.play_calls[1][4], (("Authorization", "nl-token"),)
+            )
             self.assertTrue(voice.is_playing(1))
 
         await player.aclose()

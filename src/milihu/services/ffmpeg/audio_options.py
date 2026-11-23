@@ -1,11 +1,41 @@
 """FFmpeg audio filter and CLI option builders for voice playback."""
 
+import shlex
+
 from milihu.types.default.voice import (
     DEFAULT_AUDIO_SAMPLE_RATE_HZ,
+    DEFAULT_FFMPEG_BEFORE_OPTIONS,
     DEFAULT_FFMPEG_OPTIONS,
     DEFAULT_PLAYBACK_OPTIONS,
 )
+from milihu.types.playlist import StreamHeaders
 from milihu.types.voice import PlaybackOptions, SeekOffset
+
+LOCAL_STREAM_FFMPEG_BEFORE_OPTIONS = (
+    "-protocol_whitelist http,https,tcp,tls,crypto -seekable 0 "
+    "-f s16le -ar 48000 -ac 2"
+)
+
+
+def build_ffmpeg_before_options(headers: StreamHeaders = ()) -> str:
+    """Build FFmpeg input ``before_options`` with optional HTTP headers."""
+    if not headers:
+        return DEFAULT_FFMPEG_BEFORE_OPTIONS
+    lines: list[str] = []
+    for name, value in headers:
+        if (
+            "\r" in name
+            or "\n" in name
+            or ":" in name
+            or "\r" in value
+            or "\n" in value
+        ):
+            raise ValueError("Invalid HTTP header for FFmpeg stream.")
+        lines.append(f"{name}: {value}\r\n")
+    header_block = "".join(lines)
+    return (
+        f"{LOCAL_STREAM_FFMPEG_BEFORE_OPTIONS} -headers {shlex.quote(header_block)}"
+    )
 
 
 def build_audio_filter(

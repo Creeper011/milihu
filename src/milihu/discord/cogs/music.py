@@ -305,7 +305,7 @@ class MusicCog(BaseCog):
 
     @music.command(name="play", aliases=["p"])
     @app_commands.describe(
-        url="Search query or media/YouTube playlist URL to play."
+        url="Search query or music/playlist URL (Spotify, YouTube, SoundCloud, etc.)."
     )
     async def play(self, ctx: commands.Context[BotClient], *, url: str) -> None:
         """Play or enqueue audio from a URL or search query."""

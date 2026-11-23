@@ -7,12 +7,19 @@ from milihu.milihu import main
 
 
 class EntrypointTests(unittest.TestCase):
-    def test_loads_discord_token_from_dotenv(self) -> None:
+    def test_loads_discord_token_and_runtimes_from_dotenv(self) -> None:
         with TemporaryDirectory() as directory:
             env_path = Path(directory) / ".env"
             env_path.write_text("TOKEN=test-token\n")
             with (
-                patch.dict("os.environ", {"COBALT_IMAGE": "pinned-image"}, clear=True),
+                patch.dict(
+                    "os.environ",
+                    {
+                        "COBALT_IMAGE": "pinned-cobalt",
+                        "NODELINK_IMAGE": "pinned-nodelink",
+                    },
+                    clear=True,
+                ),
                 patch("milihu.milihu.DEFAULT_ENV_PATH", env_path, create=True),
                 patch("milihu.milihu.MilihuApp") as app_class,
             ):
@@ -20,5 +27,8 @@ class EntrypointTests(unittest.TestCase):
 
         self.assertEqual(app_class.call_args.kwargs["token"], "test-token")
         self.assertEqual(
-            app_class.call_args.kwargs["media_backend"].image, "pinned-image"
+            app_class.call_args.kwargs["media_backend"].image, "pinned-cobalt"
+        )
+        self.assertEqual(
+            app_class.call_args.kwargs["audio_backend"].image, "pinned-nodelink"
         )

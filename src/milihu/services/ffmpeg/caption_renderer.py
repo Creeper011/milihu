@@ -1,7 +1,7 @@
 """FFmpeg-backed caption renderer adapter."""
 
+import math
 import tempfile
-import textwrap
 from pathlib import Path
 
 from milihu.services.ffmpeg.runner import FfmpegRunner
@@ -12,6 +12,92 @@ from milihu.types.default.caption import (
     DEFAULT_CAPTION_WRAP_WIDTH,
 )
 from milihu.types.default.gif import GifPreset
+
+_CAPTION_FONT_DIVISOR = 18
+_MIN_CAPTION_FONT_SIZE = 10.0
+_CAPTION_WIDTH_RATIO = 0.86
+_DEFAULT_MAX_EM = _CAPTION_WIDTH_RATIO * _CAPTION_FONT_DIVISOR
+
+_NARROW_CHARS = frozenset("iljI!.,:;|'`")
+_THIN_CHARS = frozenset(" tfr()[]{}-/")
+_WIDE_LOWER_CHARS = frozenset("mw")
+_EXTRA_WIDE_CHARS = frozenset("MW@%&")
+
+
+def _char_em_width(ch: str) -> float:
+    if ch in _NARROW_CHARS:
+        return 0.35
+    if ch in _THIN_CHARS:
+        return 0.45
+    if ch in _WIDE_LOWER_CHARS:
+        return 1.0
+    if ch in _EXTRA_WIDE_CHARS:
+        return 1.05
+    if ch.isupper():
+        return 0.80
+    if ord(ch) > 0x024F:
+        return 1.15
+    return 0.65
+
+
+def _line_em_width(line: str) -> float:
+    return sum(_char_em_width(ch) for ch in line)
+
+
+def _split_long_word(word: str, max_chars: int, max_em: float) -> list[str]:
+    chunks: list[str] = []
+    chunk: list[str] = []
+    chunk_em = 0.0
+    for ch in word:
+        ch_em = _char_em_width(ch)
+        if chunk and (len(chunk) + 1 > max_chars or chunk_em + ch_em > max_em):
+            chunks.append("".join(chunk))
+            chunk = [ch]
+            chunk_em = ch_em
+        else:
+            chunk.append(ch)
+            chunk_em += ch_em
+    if chunk:
+        chunks.append("".join(chunk))
+    return chunks
+
+
+def _wrap_paragraph(paragraph: str, max_chars: int, max_em: float) -> list[str]:
+    words = paragraph.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = ""
+    current_em = 0.0
+    space_em = _char_em_width(" ")
+
+    for word in words:
+        word_em = _line_em_width(word)
+        if current:
+            if (
+                len(current) + 1 + len(word) <= max_chars
+                and current_em + space_em + word_em <= max_em
+            ):
+                current = f"{current} {word}"
+                current_em += space_em + word_em
+                continue
+            lines.append(current)
+            current = ""
+            current_em = 0.0
+
+        if len(word) <= max_chars and word_em <= max_em:
+            current = word
+            current_em = word_em
+        else:
+            chunks = _split_long_word(word, max_chars, max_em)
+            lines.extend(chunks[:-1])
+            current = chunks[-1]
+            current_em = _line_em_width(current)
+
+    if current:
+        lines.append(current)
+    return lines
 
 
 class FfmpegCaptionRenderer:
@@ -30,22 +116,33 @@ class FfmpegCaptionRenderer:
         """Return media duration in seconds via ``ffprobe``, or ``None`` if unknown."""
         return await self.runner.probe_duration(input_path)
 
-    def _wrap_text(self, text: str) -> str:
+    def _wrap_text(self, text: str, *, max_em: float = _DEFAULT_MAX_EM) -> str:
         lines: list[str] = []
         for raw_line in text.strip().splitlines():
             stripped = raw_line.strip()
             if not stripped:
                 lines.append("")
                 continue
-            lines.extend(
-                textwrap.wrap(
-                    stripped,
-                    width=self.wrap_width,
-                    break_long_words=True,
-                    break_on_hyphens=True,
-                )
-            )
+            lines.extend(_wrap_paragraph(stripped, self.wrap_width, max_em))
         return "\n".join(lines)
+
+    def _resolve_layout(
+        self, text: str, target_width: int | None
+    ) -> tuple[str, float | None]:
+        if target_width is None:
+            return self._wrap_text(text, max_em=_DEFAULT_MAX_EM), None
+
+        font_size = max(_MIN_CAPTION_FONT_SIZE, target_width / _CAPTION_FONT_DIVISOR)
+        max_width_px = target_width * _CAPTION_WIDTH_RATIO
+        max_em = max_width_px / font_size
+        wrapped = self._wrap_text(text, max_em=max_em)
+        widest_em = max(
+            (_line_em_width(line) for line in wrapped.splitlines()),
+            default=0.0,
+        )
+        if widest_em > 0 and widest_em * font_size > max_width_px:
+            font_size = max(1.0, max_width_px / widest_em)
+        return wrapped, font_size
 
     @staticmethod
     def _escape_filter_path(path: Path) -> str:
@@ -60,13 +157,24 @@ class FfmpegCaptionRenderer:
         *,
         position: CaptionPosition,
         style: CaptionStyle,
+        font_size: float | None = None,
     ) -> str:
         escaped_path = cls._escape_filter_path(text_path)
-        font_size_w = r"max(16\,w/16)"
+        if font_size is not None:
+            font_size_w = f"{font_size:.2f}".rstrip("0").rstrip(".")
+        else:
+            font_size_w = rf"max(10\,w/{_CAPTION_FONT_DIVISOR})"
+
         if style == "bar":
-            font_size_iw = r"max(16\,iw/16)"
-            bar_h_pad = f"ceil({line_count}*{font_size_iw}*1.35+{font_size_iw}*0.9)"
-            bar_h_text = f"ceil({line_count}*{font_size_w}*1.35+{font_size_w}*0.9)"
+            if font_size is not None:
+                bar_h = math.ceil(line_count * font_size * 1.35 + font_size * 0.9)
+                bar_h_pad = str(bar_h)
+                bar_h_text = str(bar_h)
+            else:
+                font_size_iw = rf"max(10\,iw/{_CAPTION_FONT_DIVISOR})"
+                bar_h_pad = f"ceil({line_count}*{font_size_iw}*1.35+{font_size_iw}*0.9)"
+                bar_h_text = f"ceil({line_count}*{font_size_w}*1.35+{font_size_w}*0.9)"
+
             if position == "top":
                 pad_filter = f"pad=iw:ih+{bar_h_pad}:0:{bar_h_pad}:white"
                 y_expr = f"({bar_h_text}-text_h)/2"
@@ -101,12 +209,14 @@ class FfmpegCaptionRenderer:
         position: CaptionPosition,
         style: CaptionStyle,
         preset: GifPreset | None,
+        font_size: float | None = None,
     ) -> str:
         caption_filter = cls._build_caption_filter(
             text_path,
             line_count,
             position=position,
             style=style,
+            font_size=font_size,
         )
         if preset is None:
             return caption_filter
@@ -130,7 +240,17 @@ class FfmpegCaptionRenderer:
         preset: GifPreset | None = None,
     ) -> None:
         """Render ``text`` onto ``input_path`` and write to ``output_path``."""
-        wrapped = self._wrap_text(text)
+        source_width = await self.runner.probe_width(input_path)
+        if preset is not None and source_width is not None:
+            target_width: int | None = min(preset.width, source_width)
+        elif source_width is not None:
+            target_width = source_width
+        elif preset is not None:
+            target_width = preset.width
+        else:
+            target_width = None
+
+        wrapped, font_size = self._resolve_layout(text, target_width)
         line_count = max(1, len(wrapped.splitlines()))
         with tempfile.TemporaryDirectory() as tmp:
             text_path = Path(tmp) / "caption.txt"
@@ -141,6 +261,7 @@ class FfmpegCaptionRenderer:
                 position=position,
                 style=style,
                 preset=preset,
+                font_size=font_size,
             )
             args: list[str] = ["-y", "-i", str(input_path), "-vf", vf]
             if preset is None:

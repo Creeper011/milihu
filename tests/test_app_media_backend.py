@@ -87,9 +87,13 @@ class AppMediaBackendTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(MilihuApp, "_build_bot", return_value=bot):
             app = MilihuApp(token="test", media_backend=media_backend)
 
-        async def load_cogs(backend: MediaBackend | None) -> None:
+        async def load_cogs(
+            backend: MediaBackend | None,
+            audio_backend: object = None,
+        ) -> None:
             self.assertTrue(media_backend.active)
             self.assertIs(backend, media_backend)
+            self.assertIsNone(audio_backend)
 
         with patch.object(app, "_load_cogs", side_effect=load_cogs):
             await app.start()

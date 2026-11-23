@@ -10,8 +10,9 @@ from milihu.types.download.quality import DownloadQuality
 
 
 class Response:
-    def __init__(self, data: Mapping[str, object]) -> None:
+    def __init__(self, data: Mapping[str, object], *, bad_status: bool = False) -> None:
         self.data = data
+        self.bad_status = bad_status
 
     async def __aenter__(self) -> Self:
         return self
@@ -20,7 +21,8 @@ class Response:
         pass
 
     def raise_for_status(self) -> None:
-        pass
+        if self.bad_status:
+            raise AssertionError("raise_for_status should not run on JSON error body")
 
     async def json(self) -> Mapping[str, object]:
         await asyncio.sleep(0)
@@ -28,8 +30,11 @@ class Response:
 
 
 class Session:
-    def __init__(self, result: Mapping[str, object]) -> None:
+    def __init__(
+        self, result: Mapping[str, object], *, bad_status: bool = False
+    ) -> None:
         self.result = result
+        self.bad_status = bad_status
         self.requests: list[dict[str, object]] = []
         self.closed = False
 
@@ -38,7 +43,7 @@ class Session:
 
     def post(self, path: str, *, json: dict[str, object]) -> Response:
         self.requests.append(json)
-        return Response(self.result)
+        return Response(self.result, bad_status=self.bad_status)
 
     async def close(self) -> None:
         self.closed = True
@@ -97,20 +102,22 @@ class CobaltTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.closed)
 
     async def test_picker_and_error_are_normalized(self) -> None:
-        for raw, expected in [
+        for raw, expected, bad_status in [
             (
                 {"status": "picker", "picker": [{"type": "photo", "url": "https://x"}]},
                 {
                     "status": "selection",
                     "items": [{"type": "photo", "url": "https://x"}],
                 },
+                False,
             ),
             (
                 {"status": "error", "error": {"code": "bad.link"}},
                 {"status": "error", "code": "bad.link"},
+                True,
             ),
         ]:
-            session = Session(raw)
+            session = Session(raw, bad_status=bad_status)
             with patch(
                 "milihu.services.cobalt.client.ClientSession", return_value=session
             ):

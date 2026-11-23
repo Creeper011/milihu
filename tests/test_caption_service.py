@@ -1,7 +1,9 @@
+import json
+import re
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from milihu.exceptions.payload import InputTooLargeError, PayloadTooLargeError
 from milihu.services.ffmpeg.caption_renderer import FfmpegCaptionRenderer
@@ -229,3 +231,103 @@ class CaptionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fontcolor=black", bar_args[4])
         self.assertIn("max_colors=128", bar_args[4])
         self.assertEqual(bar_args[5:], ("/tmp/out.gif",))
+
+    async def test_caption_layout_wraps_wide_and_narrow_text_within_target_width(
+        self,
+    ) -> None:
+        runner = FfmpegRunner("/usr/bin/ffmpeg")
+        renderer = FfmpegCaptionRenderer(runner)
+        captured: list[tuple[str, float]] = []
+
+        async def fake_run(*args: str) -> None:
+            vf = args[4]
+            textfile_match = re.search(r"textfile='([^']+)'", vf)
+            fontsize_match = re.search(r"fontsize=([0-9.]+)", vf)
+            self.assertIsNotNone(textfile_match)
+            self.assertIsNotNone(fontsize_match)
+            assert textfile_match is not None and fontsize_match is not None
+            textfile = textfile_match.group(1).replace("\\:", ":")
+            captured.append(
+                (
+                    Path(textfile).read_text(encoding="utf-8"),
+                    float(fontsize_match.group(1)),
+                )
+            )
+
+        for width in (10, 40, 160, 200, 240, 360, 640):
+            for text in (
+                "yume tentando entrosar no servidor",
+                "YUME TENTANDO ENTROSAR NO SERVIDOR",
+                "W" * 28,
+                "k" * 40,
+            ):
+                captured.clear()
+                with (
+                    patch.object(runner, "probe_width", return_value=width),
+                    patch.object(runner, "run", side_effect=fake_run),
+                ):
+                    await renderer.render_caption(
+                        Path("/tmp/in.png"), Path("/tmp/out.png"), text
+                    )
+                self.assertEqual(len(captured), 1)
+                wrapped, font_size = captured[0]
+                if width == 10 and text == "W" * 28:
+                    self.assertLess(font_size, 10.0)
+                if width >= 200 and text == "W" * 28:
+                    self.assertGreaterEqual(len(wrapped.splitlines()), 2)
+
+    async def test_ffmpeg_caption_renderer_uses_effective_scaled_width(self) -> None:
+        runner = FfmpegRunner("/usr/bin/ffmpeg")
+        renderer = FfmpegCaptionRenderer(runner)
+        recorded_vf: list[str] = []
+
+        async def fake_run(*args: str) -> None:
+            recorded_vf.append(args[4])
+
+        with (
+            patch.object(runner, "probe_width", return_value=400),
+            patch.object(runner, "run", side_effect=fake_run),
+        ):
+            await renderer.render_caption(
+                Path("/tmp/in.gif"),
+                Path("/tmp/out.gif"),
+                "yume tentando entrosar no servidor",
+                preset=GifPreset(fps=6, width=200, max_colors=48),
+            )
+
+        self.assertEqual(len(recorded_vf), 1)
+        self.assertIn("fontsize=11.11", recorded_vf[0])
+
+    async def test_ffmpeg_runner_probe_width_handles_rotation_and_failures(
+        self,
+    ) -> None:
+        runner = FfmpegRunner("/usr/bin/ffmpeg")
+
+        normal = json.dumps({"streams": [{"width": 200, "height": 300}]}).encode()
+        rotated = json.dumps(
+            {
+                "streams": [
+                    {
+                        "width": 1920,
+                        "height": 1080,
+                        "side_data_list": [{"rotation": -90}],
+                    }
+                ]
+            }
+        ).encode()
+
+        for payload, expected in (
+            (normal, 200),
+            (rotated, 1080),
+            (b"{bad", None),
+        ):
+            fake_proc = AsyncMock()
+            fake_proc.returncode = 0
+            fake_proc.communicate = AsyncMock(return_value=(payload, b""))
+            with patch(
+                "milihu.services.ffmpeg.runner.asyncio.create_subprocess_exec",
+                return_value=fake_proc,
+            ):
+                self.assertEqual(
+                    await runner.probe_width(Path("/tmp/media.mp4")), expected
+                )

@@ -20,11 +20,10 @@ from milihu.services.http.http_fetcher import AiohttpFetcher
 from milihu.services.http.remote_media import HttpRemoteMediaFetcher
 from milihu.services.http.stream_probe import StreamProbe
 from milihu.services.litterbox import Litterbox
-from milihu.services.youtube_playlist import YouTubePlaylistResolver
-from milihu.services.youtube_search import YouTubeSearchResolver
 from milihu.types.help import HelpCategoryKey
 from milihu.usecases.caption_service import CaptionService
 from milihu.usecases.downloader_service import DownloaderService
+from milihu.usecases.faces.audio import AudioBackend
 from milihu.usecases.faces.media import MediaBackend
 from milihu.usecases.music_service import MusicPlayerService
 from milihu.usecases.project_service import ProjectService
@@ -51,7 +50,10 @@ HELP_CATEGORIES: HelpCategoryRegistry = MappingProxyType(
 )
 
 
-def build_cog_registry(media_backend: MediaBackend | None) -> CogRegistry:
+def build_cog_registry(
+    media_backend: MediaBackend | None,
+    audio_backend: AudioBackend | None = None,
+) -> CogRegistry:
     ffmpeg = FfmpegRunner()
     remote_media = HttpRemoteMediaFetcher()
     return {
@@ -86,10 +88,8 @@ def build_cog_registry(media_backend: MediaBackend | None) -> CogRegistry:
             bot,
             player=MusicPlayerService(
                 DiscordVoiceManager(bot),
-                media_backend,
+                audio_backend,
                 stream_probe=StreamProbe(),
-                playlist_resolver=YouTubePlaylistResolver(),
-                search_resolver=YouTubeSearchResolver(),
             ),
         ),
     }

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from milihu.services.ffmpeg.audio_options import (
     build_audio_filter,
+    build_ffmpeg_before_options,
     build_ffmpeg_options,
 )
 from milihu.types.default.voice import (
@@ -105,3 +106,10 @@ class FfmpegAudioOptionsTests(unittest.TestCase):
             "-af atrim=start=4.250,asetpts=PTS-STARTPTS,"
             "aresample=48000,asetrate=72000,aresample=48000",
         )
+        self.assertEqual(build_ffmpeg_before_options(), DEFAULT_FFMPEG_BEFORE_OPTIONS)
+        with_auth = build_ffmpeg_before_options((("Authorization", "tok-123"),))
+        self.assertIn("-seekable 0 -f s16le -ar 48000 -ac 2", with_auth)
+        self.assertNotIn("-reconnect_streamed", with_auth)
+        self.assertIn("-headers 'Authorization: tok-123\r\n'", with_auth)
+        with self.assertRaises(ValueError):
+            build_ffmpeg_before_options((("Authorization", "bad\r\nInjected: 1"),))

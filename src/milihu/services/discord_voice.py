@@ -19,12 +19,15 @@ from discord import (
 
 from milihu.discord.types.bot import BotClient
 from milihu.exceptions.voice import VoiceError
-from milihu.services.ffmpeg.audio_options import build_ffmpeg_options
+from milihu.services.ffmpeg.audio_options import (
+    build_ffmpeg_before_options,
+    build_ffmpeg_options,
+)
 from milihu.types.default.voice import (
-    DEFAULT_FFMPEG_BEFORE_OPTIONS,
     DEFAULT_PLAYBACK_OPTIONS,
     DISCORD_VOICE_STATUS_MAX_LENGTH,
 )
+from milihu.types.playlist import StreamHeaders
 from milihu.types.voice import (
     ChannelEmptyCallback,
     ChannelMoveCallback,
@@ -45,6 +48,7 @@ class AudioSourceFactory(Protocol):
         *,
         playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
         seek_seconds: SeekOffset = 0.0,
+        headers: StreamHeaders = (),
     ) -> AudioSource: ...
 
 
@@ -53,10 +57,11 @@ def _default_audio_factory(
     *,
     playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
     seek_seconds: SeekOffset = 0.0,
+    headers: StreamHeaders = (),
 ) -> AudioSource:
     return FFmpegOpusAudio(
         stream_url,
-        before_options=DEFAULT_FFMPEG_BEFORE_OPTIONS,
+        before_options=build_ffmpeg_before_options(headers),
         options=build_ffmpeg_options(playback, seek_seconds=seek_seconds),
     )
 
@@ -174,6 +179,7 @@ class DiscordVoiceManager:
         after: TrackEndCallback,
         playback: PlaybackOptions = DEFAULT_PLAYBACK_OPTIONS,
         seek_seconds: SeekOffset = 0.0,
+        headers: StreamHeaders = (),
     ) -> None:
         vc = self._connected_voice_client(guild_id)
         if vc is None:
@@ -184,6 +190,7 @@ class DiscordVoiceManager:
             stream_url,
             playback=playback,
             seek_seconds=seek_seconds,
+            headers=headers,
         )
 
         def _threadsafe_after(error: Exception | None) -> None:

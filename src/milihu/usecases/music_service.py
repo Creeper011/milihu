@@ -15,7 +15,12 @@ from milihu.types.default.voice import (
     DEFAULT_PLAYBACK_OPTIONS,
     DEFAULT_VOICE_IDLE_TIMEOUT_SECONDS,
 )
-from milihu.types.playlist import ResolvedPlaylist, ResolvedStream
+from milihu.types.playlist import (
+    AudioTrackItem,
+    ResolvedPlaylist,
+    ResolvedStream,
+    StreamHeaders,
+)
 from milihu.types.voice import (
     MAX_PLAYBACK_SPEED,
     MIN_PLAYBACK_SPEED,
@@ -28,9 +33,7 @@ from milihu.types.voice import (
     Track,
     TrackStartCallback,
 )
-from milihu.usecases.faces.media import MediaBackend
-from milihu.usecases.faces.playlist import PlaylistResolver
-from milihu.usecases.faces.search import SearchResolver
+from milihu.usecases.faces.audio import AudioBackend
 from milihu.usecases.faces.voice import StreamProber, VoiceManager
 from milihu.usecases.track_resolver import TrackResolver
 
@@ -41,7 +44,9 @@ MAX_CONSECUTIVE_FAST_FAILURES = 3
 @dataclass(slots=True)
 class _QueuedTrack:
     track: Track
+    encoded: str | None = None
     stream_url: str | None = None
+    headers: StreamHeaders = ()
     is_direct: bool = False
 
 
@@ -70,24 +75,19 @@ class MusicPlayerService:
     def __init__(
         self,
         voice: VoiceManager,
-        media_backend: MediaBackend | None,
+        audio_backend: AudioBackend | None,
         *,
         stream_probe: StreamProber,
-        playlist_resolver: PlaylistResolver | None = None,
-        search_resolver: SearchResolver | None = None,
         idle_timeout: float = DEFAULT_VOICE_IDLE_TIMEOUT_SECONDS,
         icy_poll_interval: float = DEFAULT_ICY_POLL_SECONDS,
         on_track_start: TrackStartCallback | None = None,
     ) -> None:
         self.voice = voice
-        self.media_backend = media_backend
+        self.audio_backend = audio_backend
         self.stream_probe = stream_probe
-        self.playlist_resolver = playlist_resolver
-        self.search_resolver = search_resolver
         self.resolver = TrackResolver(
-            media_backend,
+            audio_backend,
             self.stream_probe,
-            playlist_resolver,
             max_backend_failures=MAX_CONSECUTIVE_FAST_FAILURES,
         )
         self.idle_timeout = idle_timeout
@@ -289,6 +289,8 @@ class MusicPlayerService:
         track: Track,
         stream_url: str,
         *,
+        encoded: str | None,
+        headers: StreamHeaders = (),
         is_direct: bool,
         expected_generation: int,
         schedule_idle_on_error: bool = False,
@@ -310,7 +312,11 @@ class MusicPlayerService:
             effective_seek = 0.0 if track.is_live else seek_seconds
             now = time.monotonic()
             state.current = _QueuedTrack(
-                track=track, stream_url=None, is_direct=is_direct
+                track=track,
+                encoded=encoded,
+                stream_url=None,
+                headers=(),
+                is_direct=is_direct,
             )
             state.started_at = now
             state.playback_offset = effective_seek
@@ -325,6 +331,7 @@ class MusicPlayerService:
                     ),
                     playback=effective_playback,
                     seek_seconds=effective_seek,
+                    headers=headers,
                 )
             except Exception:
                 state.current = None
@@ -343,7 +350,7 @@ class MusicPlayerService:
                 raise
 
             state.generation = next_generation
-            if track.is_live:
+            if track.is_live and is_direct:
                 self._start_icy_watcher(guild_id, state, stream_url, next_generation)
             if self.voice.non_bot_member_count(guild_id) == 0:
                 self._schedule_idle_disconnect(guild_id, state)
@@ -412,23 +419,29 @@ class MusicPlayerService:
                     candidate = state.upcoming.popleft()
                 state.current = _QueuedTrack(
                     track=candidate.track,
+                    encoded=candidate.encoded,
                     stream_url=None,
+                    headers=(),
                     is_direct=candidate.is_direct,
                 )
                 state.started_at = None
 
             try:
-                stream_url, is_direct = await self.resolver.prepare_stream(
-                    candidate.track.source_url,
-                    candidate.stream_url,
+                resolved = await self.resolver.prepare_stream(
+                    candidate.track,
+                    encoded=candidate.encoded,
+                    stream_url=candidate.stream_url,
+                    headers=candidate.headers,
                     is_direct=candidate.is_direct,
                 )
                 started, old_status_channel, channel_id = await self._commit_playback(
                     guild_id,
                     state,
                     candidate.track,
-                    stream_url,
-                    is_direct=is_direct,
+                    resolved.stream_url,
+                    encoded=candidate.encoded,
+                    headers=resolved.headers,
+                    is_direct=resolved.is_direct,
                     expected_generation=expected_generation,
                 )
             except (BackendUnavailableError, OSError, RuntimeError) as exc:
@@ -530,14 +543,18 @@ class MusicPlayerService:
                     if state.loop_mode is LoopMode.TRACK and finished is not None:
                         next_candidate = _QueuedTrack(
                             track=finished.track,
+                            encoded=finished.encoded,
                             stream_url=None,
+                            headers=(),
                             is_direct=finished.is_direct,
                         )
                     elif state.loop_mode is LoopMode.QUEUE and finished is not None:
                         state.upcoming.append(
                             _QueuedTrack(
                                 track=finished.track,
+                                encoded=finished.encoded,
                                 stream_url=None,
+                                headers=(),
                                 is_direct=finished.is_direct,
                             )
                         )
@@ -628,14 +645,14 @@ class MusicPlayerService:
         guild_id: int,
         state: _GuildQueue,
         track: Track,
-        stream_url: str,
+        stream: ResolvedStream,
         *,
-        is_direct: bool,
+        encoded: str | None,
         expected_gen: int,
     ) -> None:
-        if is_direct:
+        if stream.is_direct:
             try:
-                await self.stream_probe.validate_url(stream_url)
+                await self.stream_probe.validate_url(stream.stream_url)
             except Exception:
                 async with state.lock:
                     if state.generation == expected_gen:
@@ -651,8 +668,10 @@ class MusicPlayerService:
             guild_id,
             state,
             track,
-            stream_url,
-            is_direct=is_direct,
+            stream.stream_url,
+            encoded=encoded,
+            headers=stream.headers,
+            is_direct=stream.is_direct,
             expected_generation=expected_gen,
             schedule_idle_on_error=True,
         )
@@ -670,15 +689,7 @@ class MusicPlayerService:
     ) -> EnqueueResult:
         if not playlist.entries:
             raise VoiceError("Could not load tracks from this playlist.")
-        tracks = [
-            Track(
-                source_url=entry.source_url,
-                title=entry.title,
-                requested_by=requested_by,
-                is_live=False,
-            )
-            for entry in playlist.entries
-        ]
+        items = list(playlist.entries)
 
         state = self._get_state(guild_id)
         already_playing_here = (
@@ -687,7 +698,23 @@ class MusicPlayerService:
         )
         initial_stream: ResolvedStream | None = None
         if not already_playing_here:
-            tracks, initial_stream = await self.resolver.resolve_first_playable(tracks)
+            items, initial_stream = await self.resolver.resolve_first_playable(items)
+
+        queued_items = [
+            _QueuedTrack(
+                track=Track(
+                    source_url=entry.source_url,
+                    title=entry.title,
+                    requested_by=requested_by,
+                    is_live=entry.is_live,
+                ),
+                encoded=entry.encoded,
+                stream_url=None,
+                headers=(),
+                is_direct=False,
+            )
+            for entry in items
+        ]
 
         await self._ensure_connected(guild_id, state, channel_id)
 
@@ -704,28 +731,27 @@ class MusicPlayerService:
             self._cancel_idle(state)
             if state.current is None:
                 state.consecutive_fast_failures = 0
+                first = queued_items[0]
                 state.current = _QueuedTrack(
-                    track=tracks[0], stream_url=None, is_direct=initial_is_direct
+                    track=first.track,
+                    encoded=first.encoded,
+                    stream_url=None,
+                    headers=(),
+                    is_direct=initial_is_direct,
                 )
-                state.upcoming.extend(
-                    _QueuedTrack(track=t, stream_url=None, is_direct=False)
-                    for t in tracks[1:]
-                )
+                state.upcoming.extend(queued_items[1:])
                 expected_gen = state.generation
                 started_immediately = True
             else:
                 position = len(state.upcoming) + 1
-                state.upcoming.extend(
-                    _QueuedTrack(track=t, stream_url=None, is_direct=False)
-                    for t in tracks
-                )
+                state.upcoming.extend(queued_items)
 
         if not started_immediately:
             return EnqueueResult(
-                track=tracks[0],
+                track=queued_items[0].track,
                 position=position,
                 started_immediately=False,
-                enqueued_count=len(tracks),
+                enqueued_count=len(queued_items),
                 playlist_title=playlist.title,
             )
 
@@ -733,9 +759,9 @@ class MusicPlayerService:
             await self._start_resolved_track(
                 guild_id,
                 state,
-                tracks[0],
-                initial_stream.stream_url,
-                is_direct=initial_stream.is_direct,
+                queued_items[0].track,
+                initial_stream,
+                encoded=queued_items[0].encoded,
                 expected_gen=expected_gen,
             )
         else:
@@ -743,13 +769,13 @@ class MusicPlayerService:
                 guild_id,
                 state,
                 expected_gen,
-                first_candidate=_QueuedTrack(track=tracks[0]),
+                first_candidate=queued_items[0],
             )
         return EnqueueResult(
-            track=tracks[0],
+            track=queued_items[0].track,
             position=0,
             started_immediately=True,
-            enqueued_count=len(tracks),
+            enqueued_count=len(queued_items),
             playlist_title=playlist.title,
         )
 
@@ -764,8 +790,8 @@ class MusicPlayerService:
         self._ensure_can_enqueue(guild_id, channel_id)
         source_url: HttpUrl
         playlist: ResolvedPlaylist | None = None
+        item: AudioTrackItem | None = None
         stream: ResolvedStream | None = None
-        warning: str | None = None
         if isinstance(url, str):
             value = url.strip()
             if not value:
@@ -775,18 +801,18 @@ class MusicPlayerService:
             except ValidationError as exc:
                 if "://" in value or value.lower().startswith(("http:", "https:")):
                     raise VoiceError("Use a valid HTTP(S) URL.") from exc
-                if self.search_resolver is None:
-                    raise VoiceError("Search is unavailable.") from exc
-                candidates = await self.search_resolver.search(value)
-                source_url, stream = await self.resolver.resolve_first_audio(candidates)
+                item, stream = await self.resolver.resolve_search(value)
+                source_url = item.source_url
             else:
                 source_url = request.url
-                playlist, stream, warning = await self.resolver.resolve_input(
-                    source_url
-                )
+                playlist, item, stream = await self.resolver.resolve_input(source_url)
+                if item is not None:
+                    source_url = item.source_url
         else:
             source_url = url.url
-            playlist, stream, warning = await self.resolver.resolve_input(source_url)
+            playlist, item, stream = await self.resolver.resolve_input(source_url)
+            if item is not None:
+                source_url = item.source_url
 
         if playlist is not None:
             return await self._enqueue_playlist(
@@ -794,6 +820,7 @@ class MusicPlayerService:
             )
         assert stream is not None
 
+        encoded = item.encoded if item is not None else None
         track = Track(
             source_url=source_url,
             title=stream.title,
@@ -815,7 +842,11 @@ class MusicPlayerService:
             if state.current is None:
                 state.consecutive_fast_failures = 0
                 state.current = _QueuedTrack(
-                    track=track, stream_url=None, is_direct=stream.is_direct
+                    track=track,
+                    encoded=encoded,
+                    stream_url=None,
+                    headers=(),
+                    is_direct=stream.is_direct,
                 )
                 expected_gen = state.generation
                 started_immediately = True
@@ -823,7 +854,11 @@ class MusicPlayerService:
                 # Drop the initial stream URL so queued tracks re-resolve fresh on play.
                 state.upcoming.append(
                     _QueuedTrack(
-                        track=track, stream_url=None, is_direct=stream.is_direct
+                        track=track,
+                        encoded=encoded,
+                        stream_url=None,
+                        headers=(),
+                        is_direct=stream.is_direct,
                     )
                 )
                 position = len(state.upcoming)
@@ -833,22 +868,20 @@ class MusicPlayerService:
                 track=track,
                 position=position,
                 started_immediately=False,
-                warning=warning,
             )
 
         await self._start_resolved_track(
             guild_id,
             state,
             track,
-            stream.stream_url,
-            is_direct=stream.is_direct,
+            stream,
+            encoded=encoded,
             expected_gen=expected_gen,
         )
         return EnqueueResult(
             track=track,
             position=0,
             started_immediately=True,
-            warning=warning,
         )
 
     async def skip(self, guild_id: int, channel_id: int | None) -> Track:
@@ -859,6 +892,7 @@ class MusicPlayerService:
                 raise VoiceError("Nothing is playing right now.")
 
             skipped = state.current.track
+            skipped_encoded = state.current.encoded
             skipped_is_direct = state.current.is_direct
             state.generation += 1
             expected_gen = state.generation
@@ -872,7 +906,9 @@ class MusicPlayerService:
                 state.upcoming.append(
                     _QueuedTrack(
                         track=skipped,
+                        encoded=skipped_encoded,
                         stream_url=None,
+                        headers=(),
                         is_direct=skipped_is_direct,
                     )
                 )
@@ -895,6 +931,7 @@ class MusicPlayerService:
     async def resume(self, guild_id: int, channel_id: int | None) -> Track:
         state = self._get_state(guild_id)
         restart_track: Track | None = None
+        restart_encoded: str | None = None
         restart_is_direct = False
         expected_gen = 0
 
@@ -910,12 +947,14 @@ class MusicPlayerService:
             if not self.voice.is_paused(guild_id):
                 raise VoiceError("Playback is not paused.")
             restart_track = state.current.track
+            restart_encoded = state.current.encoded
             restart_is_direct = state.current.is_direct
             expected_gen = state.generation
 
-        stream_url, resolved_is_direct = await self.resolver.prepare_stream(
-            restart_track.source_url,
-            None,
+        resolved = await self.resolver.prepare_stream(
+            restart_track,
+            encoded=restart_encoded,
+            stream_url=None,
             is_direct=restart_is_direct,
         )
 
@@ -937,12 +976,13 @@ class MusicPlayerService:
             try:
                 self.voice.play(
                     guild_id,
-                    stream_url,
+                    resolved.stream_url,
                     after=lambda err: self._on_track_finished(
                         guild_id, next_generation, err
                     ),
                     playback=effective_playback,
                     seek_seconds=seek_seconds,
+                    headers=resolved.headers,
                 )
             except Exception:
                 state.current = None
@@ -956,8 +996,10 @@ class MusicPlayerService:
                 raise
             state.current = _QueuedTrack(
                 track=restart_track,
+                encoded=restart_encoded,
                 stream_url=None,
-                is_direct=resolved_is_direct,
+                headers=(),
+                is_direct=resolved.is_direct,
             )
             state.started_at = now
             state.playback_offset = seek_seconds
@@ -975,6 +1017,7 @@ class MusicPlayerService:
     ) -> PlaybackOptions:
         state = self._get_state(guild_id)
         restart_track: Track | None = None
+        restart_encoded: str | None = None
         restart_is_direct = False
         expected_gen = 0
 
@@ -1004,12 +1047,14 @@ class MusicPlayerService:
                 return new_options
 
             restart_track = state.current.track
+            restart_encoded = state.current.encoded
             restart_is_direct = state.current.is_direct
             expected_gen = state.generation
 
-        stream_url, resolved_is_direct = await self.resolver.prepare_stream(
-            restart_track.source_url,
-            None,
+        resolved = await self.resolver.prepare_stream(
+            restart_track,
+            encoded=restart_encoded,
+            stream_url=None,
             is_direct=restart_is_direct,
         )
 
@@ -1042,12 +1087,13 @@ class MusicPlayerService:
             try:
                 self.voice.play(
                     guild_id,
-                    stream_url,
+                    resolved.stream_url,
                     after=lambda err: self._on_track_finished(
                         guild_id, next_generation, err
                     ),
                     playback=new_options,
                     seek_seconds=seek_seconds,
+                    headers=resolved.headers,
                 )
             except Exception:
                 state.current = None
@@ -1061,8 +1107,10 @@ class MusicPlayerService:
                 raise
             state.current = _QueuedTrack(
                 track=restart_track,
+                encoded=restart_encoded,
                 stream_url=None,
-                is_direct=resolved_is_direct,
+                headers=(),
+                is_direct=resolved.is_direct,
             )
             state.started_at = now
             state.playback_offset = seek_seconds
