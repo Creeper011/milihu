@@ -1,7 +1,6 @@
 """Shared base cog for attachment handling, size-safe replies, and payload errors."""
 
 import io
-import re
 from collections.abc import Callable
 from typing import Any, override
 
@@ -12,13 +11,14 @@ from discord.ui import LayoutView
 from milihu.discord.cogs._formatter import CogMessageFormatter
 from milihu.discord.types.bot import BotClient
 from milihu.exceptions.payload import PayloadTooLargeError
+from milihu.types.default.cogs import (
+    URL_RE,
+    URL_TRAILING_PUNCT,
+)
 from milihu.types.default.payload import (
     DEFAULT_FILE_SIZE_LIMIT_BYTES,
     DEFAULT_PAYLOAD_OVERHEAD_BYTES,
 )
-
-_URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
-_URL_TRAILING_PUNCT = ".,!?;:)'\""
 
 
 class BaseCog(commands.Cog):
@@ -61,10 +61,10 @@ class BaseCog(commands.Cog):
 
     @staticmethod
     def _extract_content_url(content: str) -> str | None:
-        match = _URL_RE.search(content)
+        match = URL_RE.search(content)
         if match is None:
             return None
-        return match.group(0).rstrip(_URL_TRAILING_PUNCT) or None
+        return match.group(0).rstrip(URL_TRAILING_PUNCT) or None
 
     @staticmethod
     def extract_attachment(

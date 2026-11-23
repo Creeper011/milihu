@@ -1,0 +1,30 @@
+--- a/src/processing/services/youtube.js
++++ b/src/processing/services/youtube.js
+@@ -57,7 +57,7 @@
+     }
+ }
+ 
+-const clientsWithNoCipher = ['IOS', 'ANDROID', 'YTSTUDIO_ANDROID', 'YTMUSIC_ANDROID'];
++const clientsWithNoCipher = ['VISIONOS', 'IOS', 'ANDROID', 'YTSTUDIO_ANDROID', 'YTMUSIC_ANDROID'];
+ 
+ const videoQualities = [144, 240, 360, 480, 720, 1080, 1440, 2160, 4320];
+ 
+--- a/src/stream/ffmpeg.js
++++ b/src/stream/ffmpeg.js
+@@ -69,6 +69,7 @@
+             ...ffargs,
+         ];
+ 
++        const estimatedLength = await estimateTunnelLength(streamInfo, estimateMultiplier);
+         process = spawn(...getCommand(args), {
+             windowsHide: true,
+             stdio: [
+@@ -84,7 +85,7 @@
+ 
+         res.setHeader(
+             'Estimated-Content-Length',
+-            await estimateTunnelLength(streamInfo, estimateMultiplier)
++            estimatedLength
+         );
+ 
+         pipe(muxOutput, res, shutdown);

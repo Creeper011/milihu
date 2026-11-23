@@ -8,6 +8,10 @@ from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeo
 from pydantic import HttpUrl, TypeAdapter, ValidationError
 
 from milihu.exceptions.voice import BackendUnavailableError, VoiceError
+from milihu.types.default.nodelink import (
+    GENERIC_AUTHORS,
+    OUTAGE_MARKERS,
+)
 from milihu.types.default.playlist import (
     DEFAULT_MAX_PLAYLIST_TRACKS,
     DEFAULT_MAX_SEARCH_RESULTS,
@@ -17,13 +21,6 @@ from milihu.types.playlist import (
     AudioTrackItem,
     ResolvedPlaylist,
     ResolvedStream,
-)
-
-_GENERIC_AUTHORS: frozenset[str] = frozenset({"unknown", "unknown artist"})
-_OUTAGE_MARKERS: tuple[str, ...] = (
-    "runtime contract is incomplete",
-    "source manager is not available",
-    "sources manager is not available",
 )
 
 
@@ -94,7 +91,7 @@ class NodeLinkClient:
         clean_author = (author or "").strip()
         if (
             clean_author
-            and clean_author.lower() not in _GENERIC_AUTHORS
+            and clean_author.lower() not in GENERIC_AUTHORS
             and clean_author.lower() not in clean_title.lower()
         ):
             return f"{clean_author} - {clean_title}"
@@ -322,7 +319,7 @@ class NodeLinkClient:
                     detail = self._extract_stream_error(data)
                     if detail is not None:
                         lowered = detail.lower()
-                        if any(marker in lowered for marker in _OUTAGE_MARKERS):
+                        if any(marker in lowered for marker in OUTAGE_MARKERS):
                             raise BackendUnavailableError(
                                 f"Could not resolve audio: {detail}"
                             )
@@ -348,7 +345,7 @@ class NodeLinkClient:
             not self._is_object(data) or "exception" in data or "url" not in data
         ):
             lowered = detail.lower()
-            if any(marker in lowered for marker in _OUTAGE_MARKERS):
+            if any(marker in lowered for marker in OUTAGE_MARKERS):
                 raise BackendUnavailableError(f"Could not resolve audio: {detail}")
             raise VoiceError(f"Could not resolve audio: {detail}")
 

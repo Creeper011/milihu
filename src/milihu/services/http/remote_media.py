@@ -14,42 +14,19 @@ from aiohttp import ClientError, ClientResponse, ClientSession, ClientTimeout
 
 from milihu.exceptions.payload import InputTooLargeError
 from milihu.types.common import NonEmptyStr
+from milihu.types.default.http import (
+    DEFAULT_TIMEOUT_SECONDS,
+    DEFAULT_USER_AGENT,
+    GENERIC_STEMS,
+    HTML_EXTENSIONS,
+    IMAGE_META_KEYS,
+    MAX_HTML_BYTES,
+    MAX_REDIRECTS,
+    MIME_TO_EXTENSION,
+    REDIRECT_STATUSES,
+    VIDEO_META_KEYS,
+)
 from milihu.types.media import CAPTION_MEDIA_EXTENSIONS, MEDIA_PREFIXES
-
-REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
-MAX_REDIRECTS = 5
-MAX_HTML_BYTES = 512 * 1024
-DEFAULT_TIMEOUT_SECONDS = 30.0
-DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; MilihuBot/1.0)"
-
-MIME_TO_EXTENSION: dict[str, str] = {
-    "image/gif": ".gif",
-    "image/png": ".png",
-    "image/jpeg": ".jpg",
-    "image/webp": ".webp",
-    "image/bmp": ".bmp",
-    "video/mp4": ".mp4",
-    "video/webm": ".webm",
-    "video/quicktime": ".mov",
-    "video/x-matroska": ".mkv",
-    "video/x-msvideo": ".avi",
-}
-
-VIDEO_META_KEYS: tuple[str, ...] = (
-    "og:video:secure_url",
-    "og:video:url",
-    "og:video",
-    "twitter:player:stream",
-)
-IMAGE_META_KEYS: tuple[str, ...] = (
-    "og:image:secure_url",
-    "og:image:url",
-    "og:image",
-    "twitter:image:src",
-    "twitter:image",
-)
-HTML_EXTENSIONS: frozenset[str] = frozenset({".html", ".htm", ".php", ".aspx"})
-GENERIC_STEMS: frozenset[str] = frozenset({"media", "video", "image", "gif", "file"})
 
 
 def _is_public_ip(raw_ip: str) -> bool:

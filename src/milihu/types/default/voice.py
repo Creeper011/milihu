@@ -22,3 +22,11 @@ DEFAULT_FFMPEG_BEFORE_OPTIONS: NonEmptyStr = (
 )
 DEFAULT_FFMPEG_OPTIONS: NonEmptyStr = "-vn"
 DISCORD_VOICE_STATUS_MAX_LENGTH: PositiveInt = 500
+
+LOCAL_STREAM_FFMPEG_BEFORE_OPTIONS = (
+    "-protocol_whitelist http,https,tcp,tls,crypto -seekable 0 "
+    "-f s16le -ar 48000 -ac 2"
+)
+
+FAST_FAILURE_THRESHOLD_SECONDS = 2.0
+MAX_CONSECUTIVE_FAST_FAILURES = 3

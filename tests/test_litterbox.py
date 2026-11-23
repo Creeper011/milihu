@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 from aiohttp import FormData
 
-from milihu.services.litterbox import LITTERBOX_API_URL, Litterbox
-from milihu.types.default.upload import DEFAULT_UPLOAD_LIFETIME
+from milihu.services.litterbox import Litterbox
+from milihu.types.default.upload import DEFAULT_UPLOAD_LIFETIME, LITTERBOX_API_URL
 from milihu.types.upload import UploadLifetime
 
 

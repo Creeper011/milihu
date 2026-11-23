@@ -30,6 +30,11 @@ from milihu.discord.cogs._base import BaseCog
 from milihu.discord.types.bot import BotClient
 from milihu.exceptions.voice import VoiceError
 from milihu.faces.music import MusicPlayer
+from milihu.types.default.cogs import (
+    COLOR_LIVE,
+    COLOR_PAUSED,
+    COLOR_PLAYING,
+)
 from milihu.types.default.voice import (
     DEFAULT_MAX_QUEUE_DISPLAY,
     DEFAULT_PLAYBACK_OPTIONS,
@@ -42,10 +47,6 @@ from milihu.types.voice import (
     QueueSnapshot,
     Track,
 )
-
-_COLOR_PLAYING = 0x5865F2
-_COLOR_PAUSED = 0xFEE75C
-_COLOR_LIVE = 0xED4245
 
 
 class _NowPlayingView(LayoutView):
@@ -63,7 +64,7 @@ class _NowPlayingView(LayoutView):
         self._queue_button.callback = self._on_queue
 
         heading = "## 🔴 Now Playing • LIVE" if track.is_live else "## 🎵 Now Playing"
-        accent = _COLOR_LIVE if track.is_live else _COLOR_PLAYING
+        accent = COLOR_LIVE if track.is_live else COLOR_PLAYING
         title = escape_markdown(track.title)
 
         self.add_item(
@@ -180,7 +181,7 @@ class MusicCog(BaseCog):
             footer = f"{footer} • Speed: `{snapshot.playback.speed:g}x` ({pitch_label})"
         items.append(Separator[LayoutView](visible=True, spacing=small_sep))
         items.append(TextDisplay[LayoutView](footer))
-        accent = _COLOR_PAUSED if snapshot.is_paused else _COLOR_PLAYING
+        accent = COLOR_PAUSED if snapshot.is_paused else COLOR_PLAYING
         return LayoutView().add_item(
             Container[LayoutView](*items, accent_colour=accent)
         )

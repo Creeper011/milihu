@@ -3,10 +3,11 @@
 from aiohttp import ClientError, ClientSession, ClientTimeout, FormData
 
 from milihu.exceptions.download import DownloadError
-from milihu.types.default.upload import DEFAULT_UPLOAD_LIFETIME
+from milihu.types.default.upload import (
+    DEFAULT_UPLOAD_LIFETIME,
+    LITTERBOX_API_URL,
+)
 from milihu.types.upload import UploadLifetime
-
-LITTERBOX_API_URL = "https://litterbox.catbox.moe/resources/internals/api.php"
 
 
 class Litterbox:

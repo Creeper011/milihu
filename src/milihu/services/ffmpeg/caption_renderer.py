@@ -7,31 +7,29 @@ from pathlib import Path
 from milihu.services.ffmpeg.runner import FfmpegRunner
 from milihu.types.caption import CaptionPosition, CaptionStyle
 from milihu.types.default.caption import (
+    CAPTION_EXTRA_WIDE_CHARS,
+    CAPTION_FONT_DIVISOR,
+    CAPTION_NARROW_CHARS,
+    CAPTION_THIN_CHARS,
+    CAPTION_WIDE_LOWER_CHARS,
+    CAPTION_WIDTH_RATIO,
+    DEFAULT_CAPTION_MAX_EM,
     DEFAULT_CAPTION_POSITION,
     DEFAULT_CAPTION_STYLE,
     DEFAULT_CAPTION_WRAP_WIDTH,
+    MIN_CAPTION_FONT_SIZE,
 )
 from milihu.types.default.gif import GifPreset
 
-_CAPTION_FONT_DIVISOR = 18
-_MIN_CAPTION_FONT_SIZE = 10.0
-_CAPTION_WIDTH_RATIO = 0.86
-_DEFAULT_MAX_EM = _CAPTION_WIDTH_RATIO * _CAPTION_FONT_DIVISOR
-
-_NARROW_CHARS = frozenset("iljI!.,:;|'`")
-_THIN_CHARS = frozenset(" tfr()[]{}-/")
-_WIDE_LOWER_CHARS = frozenset("mw")
-_EXTRA_WIDE_CHARS = frozenset("MW@%&")
-
 
 def _char_em_width(ch: str) -> float:
-    if ch in _NARROW_CHARS:
+    if ch in CAPTION_NARROW_CHARS:
         return 0.35
-    if ch in _THIN_CHARS:
+    if ch in CAPTION_THIN_CHARS:
         return 0.45
-    if ch in _WIDE_LOWER_CHARS:
+    if ch in CAPTION_WIDE_LOWER_CHARS:
         return 1.0
-    if ch in _EXTRA_WIDE_CHARS:
+    if ch in CAPTION_EXTRA_WIDE_CHARS:
         return 1.05
     if ch.isupper():
         return 0.80
@@ -116,7 +114,7 @@ class FfmpegCaptionRenderer:
         """Return media duration in seconds via ``ffprobe``, or ``None`` if unknown."""
         return await self.runner.probe_duration(input_path)
 
-    def _wrap_text(self, text: str, *, max_em: float = _DEFAULT_MAX_EM) -> str:
+    def _wrap_text(self, text: str, *, max_em: float = DEFAULT_CAPTION_MAX_EM) -> str:
         lines: list[str] = []
         for raw_line in text.strip().splitlines():
             stripped = raw_line.strip()
@@ -130,10 +128,10 @@ class FfmpegCaptionRenderer:
         self, text: str, target_width: int | None
     ) -> tuple[str, float | None]:
         if target_width is None:
-            return self._wrap_text(text, max_em=_DEFAULT_MAX_EM), None
+            return self._wrap_text(text, max_em=DEFAULT_CAPTION_MAX_EM), None
 
-        font_size = max(_MIN_CAPTION_FONT_SIZE, target_width / _CAPTION_FONT_DIVISOR)
-        max_width_px = target_width * _CAPTION_WIDTH_RATIO
+        font_size = max(MIN_CAPTION_FONT_SIZE, target_width / CAPTION_FONT_DIVISOR)
+        max_width_px = target_width * CAPTION_WIDTH_RATIO
         max_em = max_width_px / font_size
         wrapped = self._wrap_text(text, max_em=max_em)
         widest_em = max(
@@ -163,7 +161,7 @@ class FfmpegCaptionRenderer:
         if font_size is not None:
             font_size_w = f"{font_size:.2f}".rstrip("0").rstrip(".")
         else:
-            font_size_w = rf"max(10\,w/{_CAPTION_FONT_DIVISOR})"
+            font_size_w = rf"max(10\,w/{CAPTION_FONT_DIVISOR})"
 
         if style == "bar":
             if font_size is not None:
@@ -171,7 +169,7 @@ class FfmpegCaptionRenderer:
                 bar_h_pad = str(bar_h)
                 bar_h_text = str(bar_h)
             else:
-                font_size_iw = rf"max(10\,iw/{_CAPTION_FONT_DIVISOR})"
+                font_size_iw = rf"max(10\,iw/{CAPTION_FONT_DIVISOR})"
                 bar_h_pad = f"ceil({line_count}*{font_size_iw}*1.35+{font_size_iw}*0.9)"
                 bar_h_text = f"ceil({line_count}*{font_size_w}*1.35+{font_size_w}*0.9)"
 

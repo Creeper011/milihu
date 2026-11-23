@@ -11,29 +11,17 @@ from aiohttp import ClientError, ClientResponse, ClientSession, ClientTimeout
 from pydantic import HttpUrl
 
 from milihu.exceptions.voice import VoiceError
+from milihu.types.default.http import (
+    DIRECT_AUDIO_CONTENT_TYPES,
+    EXCLUDED_AUDIO_CONTENT_TYPES,
+    GENERIC_STREAM_PATH_NAMES,
+    HLS_CONTENT_TYPES,
+    MAX_ICY_METAINT_BYTES,
+    MAX_STREAM_REDIRECTS,
+    REDIRECT_STATUSES,
+)
 from milihu.types.default.voice import DEFAULT_STREAM_PROBE_TIMEOUT_SECONDS
 from milihu.types.voice import ProbedAudio, StreamMetadata
-
-MAX_ICY_METAINT_BYTES = 256 * 1024
-
-HLS_CONTENT_TYPES: frozenset[str] = frozenset(
-    {
-        "application/vnd.apple.mpegurl",
-        "application/x-mpegurl",
-    }
-)
-DIRECT_AUDIO_CONTENT_TYPES: frozenset[str] = HLS_CONTENT_TYPES | {"application/ogg"}
-EXCLUDED_AUDIO_CONTENT_TYPES: frozenset[str] = frozenset(
-    {
-        "audio/x-scpls",
-        "audio/x-mpegurl",
-    }
-)
-GENERIC_STREAM_PATH_NAMES: frozenset[str] = frozenset(
-    {"stream", "live", "radio", "listen"}
-)
-REDIRECT_STATUSES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
-MAX_STREAM_REDIRECTS = 5
 
 
 def _is_public_ip(raw_ip: str) -> bool:

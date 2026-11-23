@@ -17,6 +17,25 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
+    def test_layer_constants_are_defined_in_types(self) -> None:
+        for folder in ("services", "usecases", "discord"):
+            for path in sorted((SRC_ROOT / folder).rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                for node in tree.body:
+                    if isinstance(node, ast.Assign):
+                        targets = node.targets
+                    elif isinstance(node, ast.AnnAssign):
+                        targets = [node.target]
+                    else:
+                        continue
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            self.assertFalse(
+                                target.id.isupper() and target.id != "_LOGGER",
+                                f"{path.relative_to(SRC_ROOT)}:{node.lineno}: "
+                                f"move {target.id} to types/",
+                            )
+
     def _assert_no_imports(self, folder: str, *forbidden: str) -> None:
         paths = sorted((SRC_ROOT / folder).rglob("*.py"))
         self.assertTrue(paths, f"No modules found in {folder}/")

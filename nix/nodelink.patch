@@ -1,0 +1,38 @@
+--- a/dist/src/api/loadStream.js
++++ b/dist/src/api/loadStream.js
+@@ -920,7 +920,7 @@
+             'Content-Type': isWav
+                 ? 'audio/wav'
+                 : LOAD_STREAM_HEADERS['Content-Type'],
+-            'Accept-Ranges': isLiveStream ? 'none' : 'bytes',
++            'Accept-Ranges': 'none',
+             'Access-Control-Allow-Origin': '*',
+             'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length'
+         };
+@@ -933,7 +933,7 @@
+             : {
+                 ...commonHeaders,
+                 ...(!isLiveStream && !isFullOpenEndedRange
+-                    ? { 'Content-Length': String(totalFileSize) }
++                    ? {}
+                     : {})
+             };
+         let effectiveHeaders = buildEffectiveHeaders();
+@@ -1075,7 +1075,7 @@
+         const isHls = urlResult.protocol === 'hls';
+         const isSabr = urlResult.protocol === 'sabr';
+         const isLocal = sourceName === 'local';
+-        if (urlResult.url && !isHls && !isLocal && !isSabr) {
++        if (false) {
+             const resource = (await createSeekeableAudioResource(input.guildId || 'api-stream', urlResult.url, streamStartPositionMs, undefined, streamProcessorRuntime, input.filters, {
+                 streamInfo: urlResult,
+                 loudnessNormalizer: runtime.options.playback.audio?.loudnessNormalizer
+@@ -1184,7 +1184,7 @@
+         else {
+             const output = isWav
+                 ? Readable.from((async function* () {
+-                    yield createWavHeader(isLiveStream ? null : totalPcmBytes);
++                    yield createWavHeader(null);
+                     for await (const chunk of pcmStream) {
+                         yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                     }

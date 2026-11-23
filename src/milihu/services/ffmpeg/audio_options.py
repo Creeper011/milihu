@@ -7,14 +7,10 @@ from milihu.types.default.voice import (
     DEFAULT_FFMPEG_BEFORE_OPTIONS,
     DEFAULT_FFMPEG_OPTIONS,
     DEFAULT_PLAYBACK_OPTIONS,
+    LOCAL_STREAM_FFMPEG_BEFORE_OPTIONS,
 )
 from milihu.types.playlist import StreamHeaders
 from milihu.types.voice import PlaybackOptions, SeekOffset
-
-LOCAL_STREAM_FFMPEG_BEFORE_OPTIONS = (
-    "-protocol_whitelist http,https,tcp,tls,crypto -seekable 0 "
-    "-f s16le -ar 48000 -ac 2"
-)
 
 
 def build_ffmpeg_before_options(headers: StreamHeaders = ()) -> str:

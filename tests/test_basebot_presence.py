@@ -67,14 +67,31 @@ class BaseBotPresenceTests(unittest.IsolatedAsyncioTestCase):
         loader = CogLoader(bot, finder, build_cog_registry(None))
         await bot.load_cogs(finder, loader.load)
 
-        payloads = {
-            cmd.name: cmd.to_dict(bot.tree) for cmd in bot.tree.get_commands()
-        }
+        payloads = {cmd.name: cmd.to_dict(bot.tree) for cmd in bot.tree.get_commands()}
         self.assertEqual(
             set(payloads),
-            {"download", "gif", "caption", "op", "help", "music", "To GIF", "Caption"},
+            {
+                "about",
+                "download",
+                "gif",
+                "caption",
+                "op",
+                "help",
+                "music",
+                "To GIF",
+                "Caption",
+            },
         )
-        for name in ("download", "gif", "caption", "op", "help", "To GIF", "Caption"):
+        for name in (
+            "about",
+            "download",
+            "gif",
+            "caption",
+            "op",
+            "help",
+            "To GIF",
+            "Caption",
+        ):
             self.assertEqual(payloads[name]["integration_types"], [0, 1], name)
             self.assertEqual(payloads[name]["contexts"], [0, 1, 2], name)
         self.assertEqual(payloads["music"]["integration_types"], [0])

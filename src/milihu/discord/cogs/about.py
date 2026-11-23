@@ -9,11 +9,10 @@ from discord.ui import Container, LayoutView, Section, Separator, TextDisplay, T
 
 from milihu.discord.types.bot import BotClient
 from milihu.faces.project import ProjectInfoProvider
+from milihu.types.default.cogs import ACCENT_COLOUR
 from milihu.types.default.prefix import DEFAULT_PREFIX
 from milihu.types.default.project import CREATOR_USER_ID
 from milihu.types.project import ProjectOutput
-
-_ACCENT_COLOUR = 0x5865F2
 
 
 def _build_about_view(
@@ -58,7 +57,7 @@ def _build_about_view(
             details,
             Separator[LayoutView](),
             footer,
-            accent_colour=_ACCENT_COLOUR,
+            accent_colour=ACCENT_COLOUR,
         )
     )
 

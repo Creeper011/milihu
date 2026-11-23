@@ -12,10 +12,10 @@ from pydantic import validate_call
 
 from milihu.discord.cogfinder import CogFinder
 from milihu.types.cogpath import CogPath
+from milihu.types.default.cogs import MOBILE_BROWSER
 from milihu.types.default.prefix import Prefix
 from milihu.types.token import Token
 
-_MOBILE_BROWSER = "Discord iOS"
 _mobile_presence_patched = False
 
 
@@ -35,7 +35,7 @@ def _enable_mobile_presence() -> None:
             if packet.get("op") == self.IDENTIFY and isinstance(payload, dict):
                 properties = cast(dict[str, Any], payload).get("properties")
                 if isinstance(properties, dict):
-                    cast(dict[str, Any], properties)["browser"] = _MOBILE_BROWSER
+                    cast(dict[str, Any], properties)["browser"] = MOBILE_BROWSER
         await original_send_as_json(self, data)
 
     DiscordWebSocket.send_as_json = send_as_json_mobile  # type: ignore[method-assign]

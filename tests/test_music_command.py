@@ -314,7 +314,8 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
         player = FakeMusicPlayer()
         try:
             await bot.add_cog(MusicCog(_as_bot(bot), player))
-            ctx = _as_ctx(FakeContext())
+            fake_ctx = FakeContext()
+            ctx = _as_ctx(fake_ctx)
             for name, args in (
                 ("mpa", ()),
                 ("mr", ()),
@@ -332,7 +333,7 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(player.is_paused)
             self.assertIs(player.loop_mode, LoopMode.QUEUE)
             self.assertEqual(
-                [reply.get("content") for reply in cast(FakeContext, ctx).replies],
+                [reply.get("content") for reply in fake_ctx.replies],
                 [
                     "Paused **Paused Song**.",
                     "Resumed **Resumed Song**.",
@@ -383,9 +384,7 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
         ctx = FakeContext(guild_id=1, channel_id=50, voice_channel_id=100, user_id=42)
         await cog.play(_as_ctx(ctx), url="some song title")
         self.assertEqual(player.enqueued, [(1, 100, "some song title", 42)])
-        self.assertIs(
-            cog.play.params["url"].kind, commands.Parameter.KEYWORD_ONLY
-        )
+        self.assertIs(cog.play.params["url"].kind, commands.Parameter.KEYWORD_ONLY)
 
     def test_registry_wires_music_cog(self) -> None:
         bot = FakeBot()
@@ -431,7 +430,7 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(sent["view"], LayoutView)
         self.assertTrue(_is_no_mentions(sent["allowed_mentions"]))
         now_playing_text = _extract_view_text(sent["view"])
-        self.assertIn("### 🎵 Now Playing", now_playing_text)
+        self.assertEqual(now_playing_text.splitlines()[0], "## 🎵 Now Playing")
         self.assertIn(r"**\*Trap\*", now_playing_text)
         self.assertIn("-# Requested by: <@42>", now_playing_text)
 
@@ -441,7 +440,7 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(queue_reply["view"], LayoutView)
         self.assertTrue(_is_no_mentions(queue_reply["allowed_mentions"]))
         queue_text = _extract_view_text(queue_reply["view"])
-        self.assertIn(r"**Current \*Song\***", queue_text)
+        self.assertIn(r"### Current \*Song\*", queue_text.splitlines())
         self.assertIn(r"Next \_Song\_", queue_text)
 
         # Loop command converts Literal argument to LoopMode.
@@ -506,9 +505,7 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
 
         # Playlist queued while already playing.
         player.started_immediately = False
-        await cog.play(
-            _as_ctx(ctx), url="https://www.youtube.com/playlist?list=PL123"
-        )
+        await cog.play(_as_ctx(ctx), url="https://www.youtube.com/playlist?list=PL123")
         reply2 = ctx.replies[-1]
         self.assertIn(
             r"Queued 5 tracks from **Mix \_Indie\_ @everyone** "
@@ -524,9 +521,7 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
         player.warning = (
             "Could not load the playlist; playing the single track instead."
         )
-        await cog.play(
-            _as_ctx(ctx), url="https://www.youtube.com/watch?v=abc&list=WL"
-        )
+        await cog.play(_as_ctx(ctx), url="https://www.youtube.com/watch?v=abc&list=WL")
         reply3 = ctx.replies[-1]
         self.assertIn(
             "\n-# Could not load the playlist; playing the single track instead.",
@@ -565,7 +560,7 @@ class MusicCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queue_btn.label, "Queue")
 
         text = _extract_view_text(view)
-        self.assertIn("### 🔴 Now Playing • LIVE", text)
+        self.assertEqual(text.splitlines()[0], "## 🔴 Now Playing • LIVE")
         self.assertIn("**Live Radio**", text)
         self.assertIn("-# Requested by: <@99>", text)
 

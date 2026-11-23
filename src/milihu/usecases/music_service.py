@@ -14,6 +14,8 @@ from milihu.types.default.voice import (
     DEFAULT_ICY_POLL_SECONDS,
     DEFAULT_PLAYBACK_OPTIONS,
     DEFAULT_VOICE_IDLE_TIMEOUT_SECONDS,
+    FAST_FAILURE_THRESHOLD_SECONDS,
+    MAX_CONSECUTIVE_FAST_FAILURES,
 )
 from milihu.types.playlist import (
     AudioTrackItem,
@@ -36,9 +38,6 @@ from milihu.types.voice import (
 from milihu.usecases.faces.audio import AudioBackend
 from milihu.usecases.faces.voice import StreamProber, VoiceManager
 from milihu.usecases.track_resolver import TrackResolver
-
-FAST_FAILURE_THRESHOLD_SECONDS = 2.0
-MAX_CONSECUTIVE_FAST_FAILURES = 3
 
 
 @dataclass(slots=True)
