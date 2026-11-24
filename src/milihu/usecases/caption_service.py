@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from milihu.exceptions.payload import InputTooLargeError, PayloadTooLargeError
+from milihu.exceptions.remote_media import RemoteMediaError
 from milihu.faces.media import MediaSource
 from milihu.types.caption import CaptionOutput, CaptionPosition, CaptionStyle
 from milihu.types.default.caption import (
@@ -81,10 +82,13 @@ class CaptionService:
             return source
         if self.remote_fetcher is None:
             raise ValueError("Remote media links are not configured.")
-        resolved = await self.remote_fetcher.fetch(
-            source,
-            max_bytes=self.max_input_bytes,
-        )
+        try:
+            resolved = await self.remote_fetcher.fetch(
+                source,
+                max_bytes=self.max_input_bytes,
+            )
+        except RuntimeError as exc:
+            raise RemoteMediaError(str(exc)) from exc
         if not self.is_supported(resolved):
             raise ValueError(
                 "That link does not point to a supported image, GIF, or video."

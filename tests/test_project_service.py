@@ -55,7 +55,10 @@ class ProjectServiceTests(unittest.TestCase):
             # Failure is cached until retry_ttl_seconds passes.
             first = await service.get_project()
             second = await service.get_project()
-            self.assertIsNone(first.description)
+            self.assertEqual(
+                first.description,
+                "A random utility bot for Discord | Music, Download, Image",
+            )
             self.assertEqual(first, second)
             self.assertEqual(fetcher.calls, 1)
 

@@ -3,7 +3,9 @@ import time
 import unittest
 from typing import Any, Self, cast
 
-from discord import HTTPException, app_commands
+from unittest.mock import MagicMock
+
+from discord import Embed, HTTPException, Message, app_commands
 from discord.ext import commands
 
 from milihu.app.registry import build_cog_registry
@@ -35,11 +37,13 @@ class Downloader:
         *,
         resolution: str | None = "1280x720",
         codec: str | None = "h264",
+        expected_url: str = "https://example.com/post",
     ) -> None:
         self.filename = filename
         self.ctx = ctx
         self.resolution = resolution
         self.codec = codec
+        self.expected_url = expected_url
         self.downloaded_while_typing: bool | None = None
         self.request: DownloadRequest | None = None
 
@@ -47,7 +51,7 @@ class Downloader:
         self, url: DownloadRequest | str, *, max_bytes: int
     ) -> DownloadOutput:
         assert isinstance(url, DownloadRequest)
-        assert str(url.url) == "https://example.com/post"
+        assert str(url.url) == self.expected_url
         self.request = url
         if self.ctx is not None:
             self.downloaded_while_typing = self.ctx.in_typing
@@ -83,6 +87,7 @@ class Context:
         self.in_typing = False
         self.replies: list[ReplyMessage] = []
         self.reply_typing_states: list[bool] = []
+        self.message: Any = type("MessageStub", (), {"reference": None})()
 
     def typing(self) -> Self:
         return self
@@ -115,6 +120,93 @@ def _make_cog(downloader: MediaDownloader) -> DownloadCog:
 
 
 class DownloadCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_limits_repeated_requests_per_user(self) -> None:
+        command = DownloadCog.download
+        self.assertEqual(command._buckets._type, commands.BucketType.user)
+        bucket = command._buckets.get_bucket(
+            type("ContextStub", (), {"author": type("User", (), {"id": 42})()})()
+        )
+        assert bucket is not None
+        self.assertEqual(bucket.per, 5)
+        self.assertIsNone(bucket.update_rate_limit(100.0))
+        self.assertGreater(bucket.update_rate_limit(101.0) or 0, 0)
+        self.assertIsNone(bucket.update_rate_limit(106.0))
+        other_bucket = command._buckets.get_bucket(
+            type("ContextStub", (), {"author": type("User", (), {"id": 43})()})()
+        )
+        assert other_bucket is not None
+        self.assertIsNone(other_bucket.update_rate_limit(101.0))
+        self.assertEqual(command._max_concurrency.number, 1)
+        self.assertEqual(command._max_concurrency.per, commands.BucketType.user)
+        assert command.app_command is not None
+        self.assertIs(command.app_command.wrapped, command)
+
+    async def test_download_limit_errors_get_a_reply(self) -> None:
+        cog = _make_cog(Downloader())
+        for error in (
+            commands.CommandOnCooldown(commands.Cooldown(1, 5), 4, commands.BucketType.user),
+            commands.MaxConcurrencyReached(1, commands.BucketType.user),
+        ):
+            with self.subTest(error=type(error).__name__):
+                ctx = Context()
+                await cog.cog_command_error(_as_ctx(ctx), error)
+                assert ctx.reply_kwargs is not None
+                self.assertTrue(ctx.reply_kwargs["ephemeral"])
+
+    async def test_reply_url_and_prefix_aliases(self) -> None:
+        for first, second, expected in (
+            (None, None, None),
+            ("audio", None, DownloadFormat.MP3),
+            ("video", None, DownloadFormat.MP4),
+            ("https://example.com/post", "audio", DownloadFormat.MP3),
+            ("video", "https://example.com/post", DownloadFormat.MP4),
+        ):
+            with self.subTest(first=first, second=second):
+                ctx = Context()
+                replied = MagicMock(spec=Message)
+                replied.embeds = []
+                replied.content = "https://example.com/post"
+                ctx.message.reference = type(
+                    "ReferenceStub", (), {"resolved": replied, "cached_message": None}
+                )()
+                downloader = Downloader()
+                await _make_cog(downloader).download(_as_ctx(ctx), first, second)
+                assert downloader.request is not None
+                self.assertEqual(downloader.request.format, expected)
+
+    async def test_missing_url_has_usage_reply(self) -> None:
+        ctx = Context()
+        await _make_cog(Downloader()).download(_as_ctx(ctx))
+        assert ctx.reply_kwargs is not None
+        self.assertIn("URL", ctx.reply_kwargs["content"])
+
+    async def test_prefix_alias_accepts_url_without_scheme(self) -> None:
+        ctx = Context()
+        downloader = Downloader(expected_url="https://www.y/")
+        await _make_cog(downloader).download(_as_ctx(ctx), "video", "www.y")
+        assert downloader.request is not None
+        self.assertIs(downloader.request.format, DownloadFormat.MP4)
+
+    async def test_reply_embed_url_is_used(self) -> None:
+        ctx = Context()
+        replied = MagicMock(spec=Message)
+        replied.embeds = [
+            Embed.from_dict(
+                {
+                    "type": "gifv",
+                    "url": "https://example.com/post",
+                    "video": {"url": "https://example.com/post"},
+                }
+            )
+        ]
+        replied.content = "https://example.com/other"
+        ctx.message.reference = type(
+            "ReferenceStub", (), {"resolved": replied, "cached_message": None}
+        )()
+        downloader = Downloader()
+        await _make_cog(downloader).download(_as_ctx(ctx))
+        self.assertIsNotNone(downloader.request)
+
     async def test_registry_injects_backend_without_bot_state(self) -> None:
         backend = cast(MediaBackend, object())
         bot = cast(BotClient, object())
@@ -239,10 +331,11 @@ class DownloadCommandTests(unittest.IsolatedAsyncioTestCase):
         assert ctx.reply_kwargs is not None
         self.assertEqual(ctx.reply_kwargs["file"].filename, "audio.wav")
 
-    async def test_download_registers_optional_format_choices(self) -> None:
+    async def test_slash_download_requires_url(self) -> None:
         app_command = DownloadCog.download.app_command
         assert app_command is not None
-        _, format_option, quality_option = app_command.parameters
+        url_option, format_option, quality_option = app_command.parameters
+        self.assertTrue(url_option.required)
         self.assertFalse(format_option.required)
         self.assertEqual(
             {choice.value for choice in format_option.choices},

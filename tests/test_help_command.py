@@ -11,8 +11,11 @@ from pydantic import ValidationError
 
 from milihu.app.registry import HELP_CATEGORIES, build_cog_registry
 from milihu.discord.basebot import MilihuBaseBot
+from milihu.discord.cogs.about import AboutCog
+from milihu.discord.cogs.caption import CaptionCog
 from milihu.discord.cogs.download import DownloadCog
 from milihu.discord.cogs.eval import EvalCog
+from milihu.discord.cogs.gif import GifCog
 from milihu.discord.cogs.help import (
     HelpCog,
     _HelpView,  # pyright: ignore[reportPrivateUsage]
@@ -34,22 +37,38 @@ class HelpCommandTests(unittest.TestCase):
         assert isinstance(cog, HelpCog)
         self.assertIs(cog.categories, HELP_CATEGORIES)
 
-    def test_home_and_categories_render_in_english_and_exclude_eval(self) -> None:
+    def test_home_and_categories_render_compact_grouped_layout(self) -> None:
         async def check() -> None:
             bot = MilihuBaseBot(command_prefix="m$", intents=Intents.default())
             await bot.add_cog(HelpCog(bot, categories=HELP_CATEGORIES))
+            await bot.add_cog(AboutCog(bot, Mock()))
             await bot.add_cog(OpenpollCog(bot))
+            await bot.add_cog(CaptionCog(bot, Mock()))
             await bot.add_cog(DownloadCog(bot, Mock()))
+            await bot.add_cog(GifCog(bot, Mock()))
             await bot.add_cog(MusicCog(bot, Mock()))
             await bot.add_cog(EvalCog(bot))
 
             home_view = _HelpView(bot, "m$", HELP_CATEGORIES)
             home_components = home_view.to_components()[0]["components"]
-            self.assertEqual(home_components[0]["content"], "### 🌙 Milihu Help")
+            self.assertEqual(
+                home_components[0]["content"],
+                "### 🌙 Milihu Help\n"
+                "-# Pick a category from the menu below to browse commands.",
+            )
             home_body = home_components[1]["content"]
-            self.assertIn("🖼️ Media — browse commands in the menu below.", home_body)
-            self.assertIn("🎵 Music — browse commands in the menu below.", home_body)
-            self.assertIn("🧩 Utility — browse commands in the menu below.", home_body)
+            self.assertIn(
+                "🖼️ **Media** — Caption, download, and convert media to GIF.",
+                home_body,
+            )
+            self.assertIn(
+                "🎵 **Music** — Play audio in voice channels and manage the queue.",
+                home_body,
+            )
+            self.assertIn(
+                "🧩 **Utility** — Bot info, discursive polls, and this command guide.",
+                home_body,
+            )
             self.assertEqual(
                 home_components[3]["content"],
                 "-# Use `/help` or `m$help` to open this help menu.",
@@ -63,21 +82,62 @@ class HelpCommandTests(unittest.TestCase):
                 [option.label for option in select.options],
                 ["Home", "Media", "Music", "Utility"],
             )
+            self.assertEqual(
+                select.options[2].description,
+                "Play audio in voice channels and manage the queue.",
+            )
 
-            for category, expected_heading, expected_command in (
-                (HelpCategoryKey.MEDIA, "### 🖼️ Media", "`/download` · `m$download`"),
+            for category, expected_heading, expected_commands in (
+                (
+                    HelpCategoryKey.MEDIA,
+                    "### 🖼️ Media\n-# All commands also work with prefix `m$`",
+                    (
+                        "`/caption` `m$cap` `m$c` —",
+                        "`/download` `m$d` —",
+                        "`/gif` `m$gif` —",
+                    ),
+                ),
                 (
                     HelpCategoryKey.MUSIC,
-                    "### 🎵 Music",
-                    "`/music play` · `m$music play`",
+                    "### 🎵 Music\n"
+                    "-# Control voice music playback · Prefix: `m$music` / `m$m`",
+                    (
+                        "`/music play` `m$mp` —",
+                        "`/music stop` `m$mst` —",
+                        "`/music pitch` `m$mpp` —",
+                    ),
                 ),
-                (HelpCategoryKey.UTILITY, "### 🧩 Utility", "`/help` · `m$help`"),
+                (
+                    HelpCategoryKey.UTILITY,
+                    "### 🧩 Utility\n-# All commands also work with prefix `m$`",
+                    (
+                        "`/about` `m$ab` —",
+                        "`/help` `m$help` —",
+                        "`/op` `m$openpoll` —",
+                    ),
+                ),
             ):
                 view = _HelpView(bot, "m$", HELP_CATEGORIES, category)
                 components = view.to_components()[0]["components"]
                 self.assertEqual(components[0]["content"], expected_heading)
-                self.assertIn(expected_command, components[1]["content"])
-                self.assertNotIn("m$ev", components[1]["content"])
+                body = components[1]["content"]
+                for expected_command in expected_commands:
+                    self.assertIn(expected_command, body)
+                self.assertNotIn("m$ev", body)
+                self.assertNotIn("**`", body)
+
+            music_view = _HelpView(bot, "m$", HELP_CATEGORIES, HelpCategoryKey.MUSIC)
+            music_body = music_view.to_components()[0]["components"][1]["content"]
+            self.assertNotIn("short prefix command", music_body)
+            self.assertEqual(len(music_body.splitlines()), 12)
+            self.assertLess(
+                music_body.index("`/music play` `m$mp`"),
+                music_body.index("`/music queue` `m$mq`"),
+            )
+            self.assertLess(
+                music_body.index("`/music queue` `m$mq`"),
+                music_body.index("`/music pitch` `m$mpp`"),
+            )
 
             self.assertIsNone(bot.help_command)
 

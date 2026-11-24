@@ -28,6 +28,7 @@ from discord.ui import (
 
 from milihu.discord.cogs._base import BaseCog
 from milihu.discord.types.bot import BotClient
+from milihu.exceptions.remote_media import RemoteMediaError
 from milihu.exceptions.payload import PayloadTooLargeError
 from milihu.faces.caption import MediaCaptioner
 from milihu.faces.media import MediaSource
@@ -213,6 +214,9 @@ class CaptionCog(BaseCog):
                 view=self.formatter.error_view("File Too Large", str(exc))
             )
             return
+        except RemoteMediaError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
         except RuntimeError:
             await interaction.followup.send("Failed to caption the file.")
             return
@@ -241,26 +245,15 @@ class CaptionCog(BaseCog):
                 return
             raise
 
-    @commands.hybrid_command(name="caption")
-    @app_commands.describe(
-        text="Text to render as a caption.",
-        attachment="Image, GIF, or video file to caption.",
-        position="Caption placement (top or bottom). Defaults to top.",
-        style="Caption style (bar or overlay). Defaults to bar.",
-    )
+    @commands.command(name="caption", aliases=["cap", "c"])
     async def caption(
         self,
         ctx: commands.Context[BotClient],
-        attachment: Attachment | None = None,
-        position: CaptionPosition | None = None,
-        style: CaptionStyle | None = None,
         *,
         text: str,
     ) -> None:
-        """Add a text caption to an attached or replied-to image, GIF, or video."""
-        target: Attachment | str | None = (
-            attachment if attachment is not None else self.extract_media(ctx)
-        )
+        """Caption an attached or replied-to image, GIF, or video."""
+        target = self.extract_media(ctx)
         if not self._is_valid_target(target) or target is None:
             await ctx.reply(
                 "Please attach or reply to a valid image, GIF, video, or link.",
@@ -268,8 +261,6 @@ class CaptionCog(BaseCog):
             )
             return
 
-        resolved_position = position or DEFAULT_CAPTION_POSITION
-        resolved_style = style or DEFAULT_CAPTION_STYLE
         max_bytes = self.get_upload_limit(ctx)
 
         async with ctx.typing():
@@ -277,11 +268,14 @@ class CaptionCog(BaseCog):
                 output = await self.captioner.caption(
                     target,
                     text,
-                    position=resolved_position,
-                    style=resolved_style,
+                    position=DEFAULT_CAPTION_POSITION,
+                    style=DEFAULT_CAPTION_STYLE,
                     max_bytes=max_bytes,
                 )
             except ValueError as exc:
+                await ctx.reply(str(exc), ephemeral=True)
+                return
+            except RemoteMediaError as exc:
                 await ctx.reply(str(exc), ephemeral=True)
                 return
             except RuntimeError:
@@ -294,3 +288,46 @@ class CaptionCog(BaseCog):
                 filename=output.filename,
                 view_factory=lambda file: self._build_view(file, output.filename),
             )
+
+    @app_commands.command(name="caption")
+    @app_commands.describe(
+        text="Text to render as a caption.",
+        attachment="Image, GIF, or video file to caption.",
+        url="URL of the image, GIF, or video to caption.",
+        position="Caption placement (top or bottom). Defaults to top.",
+        style="Caption style (bar or overlay). Defaults to bar.",
+    )
+    async def caption_slash(
+        self,
+        interaction: Interaction[BotClient],
+        text: str,
+        attachment: Attachment | None = None,
+        url: str | None = None,
+        position: CaptionPosition | None = None,
+        style: CaptionStyle | None = None,
+    ) -> None:
+        """Add a caption to an attachment or URL."""
+        if (attachment is None) == (url is None):
+            await interaction.response.send_message(
+                "Provide exactly one source: an attachment or a URL.",
+                ephemeral=True,
+            )
+            return
+        target = (
+            attachment
+            if attachment is not None
+            else self._extract_content_url(url or "") or url
+        )
+        if not self._is_valid_target(target) or target is None:
+            await interaction.response.send_message(
+                "Please provide a valid image, GIF, video, or link.",
+                ephemeral=True,
+            )
+            return
+        await self.handle_modal_submit(
+            interaction,
+            target,
+            text,
+            position=position or DEFAULT_CAPTION_POSITION,
+            style=style or DEFAULT_CAPTION_STYLE,
+        )

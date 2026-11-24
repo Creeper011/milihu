@@ -34,16 +34,19 @@ HELP_CATEGORIES: HelpCategoryRegistry = MappingProxyType(
         HelpCategoryKey.MEDIA: CogHelpCategory(
             label="Media",
             emoji="🖼️",
+            description="Caption, download, and convert media to GIF.",
             items=(CaptionCog, DownloadCog, GifCog),
         ),
         HelpCategoryKey.MUSIC: CogHelpCategory(
             label="Music",
             emoji="🎵",
+            description="Play audio in voice channels and manage the queue.",
             items=(MusicCog,),
         ),
         HelpCategoryKey.UTILITY: CogHelpCategory(
             label="Utility",
             emoji="🧩",
+            description="Bot info, discursive polls, and this command guide.",
             items=(AboutCog, OpenpollCog, HelpCog),
         ),
     }

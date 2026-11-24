@@ -218,43 +218,57 @@ class MusicCog(BaseCog):
         if ctx.invoked_subcommand is None:
             await self.queue(ctx)
 
-    @commands.command(name="mp")
+    @commands.command(
+        name="mp", hidden=True, extras={"help_shortcut_for": "music play"}
+    )
     @commands.guild_only()
     async def quick_play(self, ctx: commands.Context[BotClient], *, url: str) -> None:
         """Play audio with the short prefix command."""
         await self.play(ctx, url=url)
 
-    @commands.command(name="ms")
+    @commands.command(
+        name="ms", hidden=True, extras={"help_shortcut_for": "music skip"}
+    )
     @commands.guild_only()
     async def quick_skip(self, ctx: commands.Context[BotClient]) -> None:
         """Skip the current track with the short prefix command."""
         await self.skip(ctx)
 
-    @commands.command(name="mst")
+    @commands.command(
+        name="mst", hidden=True, extras={"help_shortcut_for": "music stop"}
+    )
     @commands.guild_only()
     async def quick_stop(self, ctx: commands.Context[BotClient]) -> None:
         """Stop playback with the short prefix command."""
         await self.stop(ctx)
 
-    @commands.command(name="mpa")
+    @commands.command(
+        name="mpa", hidden=True, extras={"help_shortcut_for": "music pause"}
+    )
     @commands.guild_only()
     async def quick_pause(self, ctx: commands.Context[BotClient]) -> None:
         """Pause playback with the short prefix command."""
         await self.pause(ctx)
 
-    @commands.command(name="mr")
+    @commands.command(
+        name="mr", hidden=True, extras={"help_shortcut_for": "music resume"}
+    )
     @commands.guild_only()
     async def quick_resume(self, ctx: commands.Context[BotClient]) -> None:
         """Resume playback with the short prefix command."""
         await self.resume(ctx)
 
-    @commands.command(name="mq")
+    @commands.command(
+        name="mq", hidden=True, extras={"help_shortcut_for": "music queue"}
+    )
     @commands.guild_only()
     async def quick_queue(self, ctx: commands.Context[BotClient]) -> None:
         """Show the queue with the short prefix command."""
         await self.queue(ctx)
 
-    @commands.command(name="ml")
+    @commands.command(
+        name="ml", hidden=True, extras={"help_shortcut_for": "music loop"}
+    )
     @commands.guild_only()
     async def quick_loop(
         self,
@@ -264,7 +278,9 @@ class MusicCog(BaseCog):
         """Set loop mode with the short prefix command."""
         await self.loop(ctx, mode)
 
-    @commands.command(name="mrm")
+    @commands.command(
+        name="mrm", hidden=True, extras={"help_shortcut_for": "music remove"}
+    )
     @commands.guild_only()
     async def quick_remove(
         self, ctx: commands.Context[BotClient], position: int
@@ -272,19 +288,25 @@ class MusicCog(BaseCog):
         """Remove a queued track with the short prefix command."""
         await self.remove(ctx, position)
 
-    @commands.command(name="mc")
+    @commands.command(
+        name="mc", hidden=True, extras={"help_shortcut_for": "music clear"}
+    )
     @commands.guild_only()
     async def quick_clear(self, ctx: commands.Context[BotClient]) -> None:
         """Clear the queue with the short prefix command."""
         await self.clear(ctx)
 
-    @commands.command(name="msh")
+    @commands.command(
+        name="msh", hidden=True, extras={"help_shortcut_for": "music shuffle"}
+    )
     @commands.guild_only()
     async def quick_shuffle(self, ctx: commands.Context[BotClient]) -> None:
         """Shuffle the queue with the short prefix command."""
         await self.shuffle(ctx)
 
-    @commands.command(name="msp")
+    @commands.command(
+        name="msp", hidden=True, extras={"help_shortcut_for": "music speed"}
+    )
     @commands.guild_only()
     async def quick_speed(
         self,
@@ -294,7 +316,9 @@ class MusicCog(BaseCog):
         """Set playback speed with the short prefix command."""
         await self.speed(ctx, speed=speed)
 
-    @commands.command(name="mpp")
+    @commands.command(
+        name="mpp", hidden=True, extras={"help_shortcut_for": "music pitch"}
+    )
     @commands.guild_only()
     async def quick_pitch(
         self,
@@ -304,7 +328,7 @@ class MusicCog(BaseCog):
         """Toggle or set pitch preservation with the short prefix command."""
         await self.pitch(ctx, preserve=preserve)
 
-    @music.command(name="play", aliases=["p"])
+    @music.command(name="play", aliases=["p"], extras={"help_order": 1})
     @app_commands.describe(
         url="Search query or music/playlist URL (Spotify, YouTube, SoundCloud, etc.)."
     )
@@ -356,7 +380,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="skip", aliases=["s"])
+    @music.command(name="skip", aliases=["s"], extras={"help_order": 4})
     async def skip(self, ctx: commands.Context[BotClient]) -> None:
         """Skip the currently playing track."""
         skipped = await self.player.skip(
@@ -367,7 +391,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="pause")
+    @music.command(name="pause", extras={"help_order": 2})
     async def pause(self, ctx: commands.Context[BotClient]) -> None:
         """Pause the currently playing track."""
         track = await self.player.pause(
@@ -378,7 +402,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="resume")
+    @music.command(name="resume", extras={"help_order": 3})
     async def resume(self, ctx: commands.Context[BotClient]) -> None:
         """Resume paused playback."""
         track = await self.player.resume(
@@ -389,7 +413,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="stop", aliases=["leave"])
+    @music.command(name="stop", aliases=["leave"], extras={"help_order": 5})
     async def stop(self, ctx: commands.Context[BotClient]) -> None:
         """Stop playback, clear the queue, and disconnect."""
         await self.player.stop(self._guild_id(ctx), self._member_voice_channel_id(ctx))
@@ -398,7 +422,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="queue", aliases=["q"])
+    @music.command(name="queue", aliases=["q"], extras={"help_order": 6})
     async def queue(self, ctx: commands.Context[BotClient]) -> None:
         """Show the current track and upcoming queue."""
         snapshot = self.player.get_queue(self._guild_id(ctx))
@@ -407,7 +431,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="loop")
+    @music.command(name="loop", extras={"help_order": 10})
     @app_commands.describe(mode="Loop behavior for playback.")
     async def loop(
         self,
@@ -430,7 +454,7 @@ class MusicCog(BaseCog):
         pitch_state = "on" if playback.preserve_pitch else "off"
         return f"`{playback.speed:g}x` (preserve pitch: `{pitch_state}`)"
 
-    @music.command(name="speed", aliases=["sp"])
+    @music.command(name="speed", aliases=["sp"], extras={"help_order": 11})
     @app_commands.describe(
         speed=(
             f"Playback speed multiplier ({MIN_PLAYBACK_SPEED:g} to "
@@ -461,7 +485,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="pitch", aliases=["pp"])
+    @music.command(name="pitch", aliases=["pp"], extras={"help_order": 12})
     @app_commands.describe(
         preserve="Set pitch preservation on or off (leave blank to toggle).",
     )
@@ -489,7 +513,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="remove", aliases=["rm"])
+    @music.command(name="remove", aliases=["rm"], extras={"help_order": 7})
     @app_commands.describe(position="1-based position in the upcoming queue.")
     async def remove(self, ctx: commands.Context[BotClient], position: int) -> None:
         """Remove a track from the upcoming queue."""
@@ -503,7 +527,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="clear")
+    @music.command(name="clear", extras={"help_order": 8})
     async def clear(self, ctx: commands.Context[BotClient]) -> None:
         """Clear all upcoming tracks from the queue."""
         count = await self.player.clear(
@@ -514,7 +538,7 @@ class MusicCog(BaseCog):
             allowed_mentions=AllowedMentions.none(),
         )
 
-    @music.command(name="shuffle")
+    @music.command(name="shuffle", extras={"help_order": 9})
     async def shuffle(self, ctx: commands.Context[BotClient]) -> None:
         """Shuffle the upcoming queue."""
         count = await self.player.shuffle(

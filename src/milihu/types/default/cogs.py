@@ -10,7 +10,7 @@ DEFAULT_COGS_PACKAGE: CogPath = "milihu.discord.cogs"
 
 MOBILE_BROWSER = "Discord iOS"
 
-URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+URL_RE = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
 URL_TRAILING_PUNCT = ".,!?;:)'\""
 
 COLOR_PLAYING = 0x5865F2

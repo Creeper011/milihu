@@ -64,7 +64,8 @@ class BaseCog(commands.Cog):
         match = URL_RE.search(content)
         if match is None:
             return None
-        return match.group(0).rstrip(URL_TRAILING_PUNCT) or None
+        url = match.group(0).rstrip(URL_TRAILING_PUNCT)
+        return f"https://{url}" if url.startswith("www.") else url
 
     @staticmethod
     def extract_attachment(
@@ -124,6 +125,16 @@ class BaseCog(commands.Cog):
                 return replied_url
 
         return cls._extract_content_url(ctx.message.content)
+
+    @classmethod
+    def extract_reply_url(cls, ctx: commands.Context[BotClient]) -> str | None:
+        """Return a media or content URL from the replied-to message."""
+        replied = cls._resolved_reference(ctx.message)
+        if replied is None:
+            return None
+        return cls._extract_embed_media_url(replied.embeds) or cls._extract_content_url(
+            replied.content
+        )
 
     @staticmethod
     def get_upload_limit(

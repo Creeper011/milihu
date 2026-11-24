@@ -29,6 +29,7 @@ class HelpCategory[ItemT](BaseModel):
 
     label: NonEmptyStr
     emoji: NonEmptyStr
+    description: NonEmptyStr | None = None
     items: tuple[ItemT, ...] = Field(min_length=1)
 
     @property

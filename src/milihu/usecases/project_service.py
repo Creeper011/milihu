@@ -8,6 +8,7 @@ from collections.abc import Callable
 
 from milihu.types.default.project import (
     DEFAULT_PROJECT_CACHE_TTL_SECONDS,
+    DEFAULT_PROJECT_DESCRIPTION,
     DEFAULT_PROJECT_RETRY_TTL_SECONDS,
 )
 from milihu.types.project import ProjectOutput, RemoteProjectInfo
@@ -48,7 +49,9 @@ class ProjectService:
         """Return project description, repository URL, and runtime stack."""
         remote = await self._get_remote()
         return ProjectOutput(
-            description=remote.description if remote is not None else None,
+            description=(
+                remote.description if remote is not None else DEFAULT_PROJECT_DESCRIPTION
+            ),
             repository_url=remote.repository_url if remote is not None else None,
             stack=self._stack_provider(),
         )

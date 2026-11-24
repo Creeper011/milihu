@@ -12,12 +12,14 @@ from discord import (
     Message,
 )
 from discord.ext import commands
+from discord.ext.commands.view import StringView
 from discord.ui import Container, LayoutView, MediaGallery, Modal, TextDisplay
 
 from milihu.app.registry import build_cog_registry
 from milihu.discord.cogs.caption import CaptionCog
 from milihu.discord.cogs.gif import GifCog
 from milihu.discord.types.bot import BotClient
+from milihu.exceptions.remote_media import RemoteMediaError
 from milihu.exceptions.payload import PayloadTooLargeError
 from milihu.faces.caption import MediaCaptioner
 from milihu.faces.media import MediaSource
@@ -182,7 +184,7 @@ class CaptionCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(container.children[0], TextDisplay)
         self.assertIsInstance(container.children[1], MediaGallery)
 
-    async def test_caption_command_forwards_explicit_position_and_style(self) -> None:
+    async def test_caption_prefix_keeps_reserved_words_in_text(self) -> None:
         attachment = FakeAttachment(filename="dance.gif", content_type="image/gif")
         captioner = FakeCaptioner(
             output=CaptionOutput(
@@ -194,15 +196,12 @@ class CaptionCommandTests(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(captioner)
         ctx = FakeContext(attachments=[attachment])
 
-        await cog.caption(
-            _as_ctx(ctx),
-            position="bottom",
-            style="overlay",
-            text="nice move",
-        )
+        await cog.caption(_as_ctx(ctx), text="bottom overlay nice move")
 
         _, text, position, style, _ = captioner.calls[0]
-        self.assertEqual((text, position, style), ("nice move", "bottom", "overlay"))
+        self.assertEqual(
+            (text, position, style), ("bottom overlay nice move", "top", "bar")
+        )
         assert ctx.reply_kwargs is not None
         self.assertEqual(ctx.reply_kwargs["file"].filename, "dance_captioned.gif")
 
@@ -216,21 +215,96 @@ class CaptionCommandTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         cog = _make_cog(captioner)
-        ctx = FakeContext(attachments=[])
-
-        assert cog.caption.app_command is not None
-        param_types = {p.name: p.type for p in cog.caption.app_command.parameters}
+        param_types = {p.name: p.type for p in cog.caption_slash.parameters}
         self.assertEqual(param_types["attachment"], AppCommandOptionType.attachment)
 
-        await cog.caption(
-            _as_ctx(ctx),
+        interaction = MagicMock()
+        interaction.guild = None
+        interaction.filesize_limit = DEFAULT_FILE_SIZE_LIMIT_BYTES
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+        await cog.caption_slash.callback(
+            cog,
+            cast(Interaction[BotClient], interaction),
+            "slash upload",
             attachment=_as_attachment(attachment),
-            text="slash upload",
         )
 
         self.assertEqual(len(captioner.calls), 1)
         self.assertIs(captioner.calls[0][0], attachment)
         self.assertEqual(captioner.calls[0][1], "slash upload")
+
+    async def test_caption_slash_accepts_url(self) -> None:
+        captioner = FakeCaptioner()
+        cog = _make_cog(captioner)
+        interaction = MagicMock()
+        interaction.guild = None
+        interaction.filesize_limit = DEFAULT_FILE_SIZE_LIMIT_BYTES
+        interaction.response.defer = AsyncMock()
+        interaction.followup.send = AsyncMock()
+
+        await cog.caption_slash.callback(
+            cog,
+            cast(Interaction[BotClient], interaction),
+            "hello",
+            url="https://example.com/gif",
+        )
+
+        self.assertEqual(captioner.calls[0][:2], ("https://example.com/gif", "hello"))
+
+    async def test_caption_slash_rejects_missing_or_ambiguous_source(self) -> None:
+        cog = _make_cog(FakeCaptioner())
+        interaction = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        for attachment, url in (
+            (None, None),
+            (_as_attachment(FakeAttachment()), "https://example.com/gif"),
+        ):
+            with self.subTest(attachment=attachment, url=url):
+                await cog.caption_slash.callback(
+                    cog,
+                    cast(Interaction[BotClient], interaction),
+                    "hello",
+                    attachment=attachment,
+                    url=url,
+                )
+                self.assertTrue(
+                    interaction.response.send_message.call_args.kwargs["ephemeral"]
+                )
+
+    async def test_caption_prefix_reply_link_preserves_reserved_word(self) -> None:
+        captioner = FakeCaptioner()
+        cog = _make_cog(captioner)
+        ctx = FakeContext(content="m$caption top demais")
+        replied = MagicMock(spec=Message)
+        replied.attachments = []
+        replied.embeds = []
+        replied.content = "https://example.com/gif"
+        ctx.message.reference = type(
+            "ReferenceStub", (), {"resolved": replied, "cached_message": None}
+        )()
+        await cog.caption(_as_ctx(ctx), text="top demais")
+        self.assertEqual(
+            captioner.calls[0][:2], ("https://example.com/gif", "top demais")
+        )
+
+    async def test_caption_prefix_keeps_leading_url_as_text(self) -> None:
+        attachment = FakeAttachment()
+        captioner = FakeCaptioner()
+        cog = _make_cog(captioner)
+        ctx = FakeContext(attachments=[attachment])
+        await cog.caption(_as_ctx(ctx), text="https://example.com/gif hello world")
+        self.assertEqual(
+            captioner.calls[0][:2],
+            (attachment, "https://example.com/gif hello world"),
+        )
+
+    async def test_caption_prefix_parses_full_text_without_url_splitting(self) -> None:
+        cog = _make_cog(FakeCaptioner())
+        ctx = FakeContext()
+        ctx.view = StringView("https://example.com/gif hello world")
+        await cog.caption._parse_arguments(_as_ctx(ctx))
+        self.assertEqual(ctx.kwargs["text"], "https://example.com/gif hello world")
 
     def test_gif_slash_command_exposes_attachment_option(self) -> None:
         registry = build_cog_registry(None)
@@ -317,6 +391,17 @@ class CaptionCommandTests(unittest.IsolatedAsyncioTestCase):
         await runtime_cog.caption(_as_ctx(ctx), text="boom")
         assert ctx.reply_kwargs is not None
         self.assertEqual(ctx.reply_kwargs["content"], "Failed to caption the file.")
+
+    async def test_caption_url_reports_fetch_error(self) -> None:
+        captioner = FakeCaptioner(
+            error=RemoteMediaError("Failed to fetch media URL (HTTP 403).")
+        )
+        ctx = FakeContext(content="https://example.com/gif")
+        await _make_cog(captioner).caption(_as_ctx(ctx), text="hello")
+        assert ctx.reply_kwargs is not None
+        self.assertEqual(
+            ctx.reply_kwargs["content"], "Failed to fetch media URL (HTTP 403)."
+        )
 
     async def test_context_menu_rejects_message_without_supported_media(
         self,

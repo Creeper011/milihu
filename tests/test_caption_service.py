@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from milihu.exceptions.payload import InputTooLargeError, PayloadTooLargeError
+from milihu.exceptions.remote_media import RemoteMediaError
 from milihu.services.ffmpeg.caption_renderer import FfmpegCaptionRenderer
 from milihu.services.ffmpeg.runner import FfmpegRunner
 from milihu.types.caption import CaptionPosition, CaptionStyle
@@ -128,6 +129,23 @@ class CaptionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetcher.urls, ["https://klipy.com/gifs/momona-lady-jewelpet"])
         self.assertEqual(output.filename, "momona-lady-jewelpet_captioned.gif")
         self.assertEqual(output.extension, ".gif")
+
+    async def test_remote_fetch_error_is_translated_to_caption_error(self) -> None:
+        class FailedRemoteFetcher:
+            async def fetch(
+                self,
+                url: str,
+                *,
+                max_bytes: int | None = None,
+            ) -> FakeSource:
+                raise RuntimeError("Failed to fetch media URL (HTTP 403).")
+
+        service = CaptionService(
+            renderer=RecordingCaptionRenderer(),
+            remote_fetcher=FailedRemoteFetcher(),
+        )
+        with self.assertRaisesRegex(RemoteMediaError, "HTTP 403"):
+            await service.caption("https://example.com/media", "hello")
 
     async def test_static_image_exceeding_max_bytes_raises_payload_too_large(
         self,

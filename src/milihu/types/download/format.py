@@ -13,6 +13,12 @@ class DownloadFormat(StrEnum):
     MKV = "mkv"
 
 
+FORMAT_ALIASES: dict[str, DownloadFormat] = {
+    "audio": DownloadFormat.MP3,
+    "video": DownloadFormat.MP4,
+}
+
+
 AUDIO_FORMATS: frozenset[DownloadFormat] = frozenset(
     {
         DownloadFormat.MP3,

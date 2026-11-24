@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from mimetypes import guess_file_type
+from typing import override
 
 from discord import File, app_commands, utils
 from discord.ext import commands
@@ -15,7 +16,7 @@ from milihu.exceptions.download import DownloadError
 from milihu.faces.download import MediaDownloader
 from milihu.types.default.payload import BYTES_PER_MIB
 from milihu.types.default.upload import DEFAULT_UPLOAD_LIFETIME
-from milihu.types.download.format import DownloadFormat
+from milihu.types.download.format import FORMAT_ALIASES, DownloadFormat
 from milihu.types.download.output import DownloadOutput
 from milihu.types.download.quality import DownloadQuality
 from milihu.types.download.request import DownloadRequest
@@ -93,7 +94,9 @@ class DownloadCog(BaseCog):
             Container[LayoutView](media, Separator[LayoutView](), metadata)
         )
 
-    @commands.hybrid_command(name="download")
+    @commands.hybrid_command(name="download", aliases=["d"])
+    @commands.cooldown(1, 5, commands.BucketType.user)
+    @commands.max_concurrency(1, per=commands.BucketType.user)
     @app_commands.describe(
         format="Output format. Leave blank for automatic selection.",
         quality="Video resolution. Leave blank for automatic selection.",
@@ -111,11 +114,28 @@ class DownloadCog(BaseCog):
     async def download(
         self,
         ctx: commands.Context[BotClient],
-        url: str,
+        url: str | None = None,
         format: str | None = None,
         quality: str | None = None,
     ) -> None:
         """Yeaaa, download "anything" from internet!"""
+        if ctx.interaction is None:
+            if url is not None and url in FORMAT_ALIASES:
+                selected = FORMAT_ALIASES[url]
+                url, format = format, selected
+            elif format is not None and format in FORMAT_ALIASES:
+                format = FORMAT_ALIASES[format]
+            if url is not None:
+                url = self._extract_content_url(url) or url
+            url = url or self.extract_reply_url(ctx)
+
+        if url is None:
+            await ctx.reply(
+                "Provide a URL or reply to a message with a link. "
+                "Example: m$download video",
+                ephemeral=True,
+            )
+            return
         try:
             request = DownloadRequest.model_validate(
                 {"url": url, "format": format, "quality": quality}
@@ -160,3 +180,23 @@ class DownloadCog(BaseCog):
             view_factory=lambda file: self._build_view(file, output),
             message=status_message,
         )
+
+    # The prefix accepts a missing URL to read a replied message; slash requires one.
+    assert download.app_command is not None
+    download.app_command._params["url"].required = True  # pyright: ignore[reportPrivateUsage]
+
+    @override
+    async def cog_command_error(
+        self, ctx: commands.Context[BotClient], error: Exception
+    ) -> None:
+        original = self._unwrap_command_error(error)
+        if isinstance(original, commands.CommandOnCooldown):
+            await ctx.reply(
+                f"Try downloading again in {original.retry_after:.0f} seconds.",
+                ephemeral=True,
+            )
+            return
+        if isinstance(original, commands.MaxConcurrencyReached):
+            await ctx.reply("Your download is already running.", ephemeral=True)
+            return
+        await super().cog_command_error(ctx, error)

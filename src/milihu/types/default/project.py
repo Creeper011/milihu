@@ -25,6 +25,9 @@ GITHUB_API_HEADERS: MappingProxyType[str, str] = MappingProxyType(
 
 DEFAULT_REPO_DIR: Path = Path(__file__).resolve().parents[4]
 DEFAULT_GIT_REMOTE: NonEmptyStr = "origin"
+DEFAULT_PROJECT_DESCRIPTION: NonEmptyStr = (
+    "A random utility bot for Discord | Music, Download, Image"
+)
 DEFAULT_GITHUB_TIMEOUT_SECONDS: PositiveFloat = 5.0
 DEFAULT_PROJECT_CACHE_TTL_SECONDS: PositiveFloat = 3600.0
 DEFAULT_PROJECT_RETRY_TTL_SECONDS: PositiveFloat = 300.0
